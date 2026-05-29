@@ -1,5 +1,8 @@
 __pycache__/
 *.py[cod]
+dist/
+.venv/
 
 .env.local
 config.toml
+life-log-sync.toml

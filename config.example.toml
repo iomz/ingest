@@ -1,6 +1,10 @@
+[app]
+# Optional. Defaults to ${XDG_DATA_HOME:-~/.local/share}/life-log-sync.
+data_dir = ""
+
 [strava]
-# Copy this file to config.toml and replace the placeholder values.
-# Never commit config.toml; it contains OAuth credentials and refreshed tokens.
+# Copy this file to your local config path and replace the placeholder values.
+# Store it as ${XDG_CONFIG_HOME:-~/.config}/life-log-sync.toml, not in this repository.
 client_id = ""
 client_secret = ""
 refresh_token = ""
@@ -9,9 +13,9 @@ refresh_token = ""
 access_token = ""
 expires_at = 0
 
-[sync]
+[sync.strava]
 # Number of recent days to fetch from Strava.
-days = 7
+days = 30
 
 # Maximum number of activities to request per sync run.
-per_page = 10
+per_page = 100
