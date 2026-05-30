@@ -27,7 +27,16 @@ Sync and context generation are separate:
 - `life-log-sync backfill withings` fetches historical Withings data.
 - `life-log-sync backfill strava` fetches historical Strava data.
 - `life-log-sync sync withings` fetches a recent Withings window for daily use.
-- `life-log-sync context today` reads local CSV data only and does not call external APIs.
+- `life-log-sync sync all` runs daily sync for all configured sources.
+- `life-log-sync context today` syncs only sources missing local data for the target date.
+
+Context generation normalizes activities by source, deduplicates overlapping
+records, and aggregates only primary activities. Data coverage in
+`today_context.md` shows activity counts before and after deduplication.
+Withings workout data does not indicate indoor/outdoor status, so the
+normalized activity schema does not store an indoor flag. Swimming is kept as
+a separate activity category and is not mixed into walking distance.
+Metric thresholds and trend definitions are documented in `docs/metrics.md`.
 
 ## Configuration
 
@@ -78,7 +87,8 @@ ${XDG_DATA_HOME:-~/.local/share}/life-log-sync/
     └── today_context.md
 ```
 
-Generate today's context from synced data:
+Generate today's context. This reads local data first, syncs only sources
+missing data for the target date, then renders `generated/today_context.md`:
 
 ```sh
 life-log-sync context today
@@ -178,6 +188,15 @@ normalized CSV into the application data directory.
 Withings requires OAuth user tokens. `client_id` and `client_secret` identify
 the app, but user data access requires `withings.refresh_token` or
 `withings.access_token` in the config file.
+
+Workout sync requires the Withings `user.activity` OAuth scope in addition to
+`user.metrics`. Existing tokens created only for body measurements must be
+re-authorized:
+
+```sh
+life-log-sync withings auth-url --redirect-uri "https://your-registered-callback"
+life-log-sync withings exchange-code --redirect-uri "https://your-registered-callback" --code "<code>"
+```
 
 Backfill historical measurements:
 

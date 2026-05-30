@@ -1,20 +1,38 @@
 from __future__ import annotations
 
 import csv
-from collections import Counter
 from datetime import date, timedelta
 from pathlib import Path
 
+from life_log_sync.activities import (
+    NormalizedActivity,
+    coverage_summary,
+    deduplicate_activities,
+    normalize_strava_activity,
+    normalize_withings_activity,
+    primary_activities,
+)
 from life_log_sync.app_data import write_text_file
 from life_log_sync.config import AppConfig
 
 
 def generate_today_context(config: AppConfig, target_date: date | None = None) -> Path:
     target = target_date or date.today()
-    activities = activities_for_date(read_strava_activities(config.strava.activities_csv), target)
+    all_activities = read_strava_activities(config.strava.activities_csv)
+    withings_activities = read_withings_activities(config.withings.workouts_csv)
+    activities = activities_for_date(all_activities, target)
+    withings_activities_for_target = withings_activities_for_date(withings_activities, target)
     all_measures = read_withings_measures(config.withings.measures_csv)
     measures = measures_for_date(all_measures, target)
-    content = render_today_context(target, activities, measures, all_measures)
+    content = render_today_context(
+        target,
+        activities,
+        measures,
+        all_measures,
+        all_activities,
+        extra_activities=_normalize_withings_activities(withings_activities_for_target),
+        extra_historical_activities=_normalize_withings_activities(withings_activities),
+    )
     return write_text_file(config.today_context_path, content)
 
 
@@ -34,12 +52,29 @@ def read_withings_measures(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(csv_file))
 
 
+def read_withings_activities(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
 def activities_for_date(activities: list[dict[str, str]], target_date: date) -> list[dict[str, str]]:
     target = target_date.isoformat()
     return [
         activity
         for activity in activities
         if activity.get("start_date_local", "").startswith(target)
+    ]
+
+
+def withings_activities_for_date(activities: list[dict[str, str]], target_date: date) -> list[dict[str, str]]:
+    target = target_date.isoformat()
+    return [
+        activity
+        for activity in activities
+        if activity.get("start_time", "").startswith(target)
     ]
 
 
@@ -53,97 +88,121 @@ def render_today_context(
     activities: list[dict[str, str]],
     measures: list[dict[str, str]] | None = None,
     historical_measures: list[dict[str, str]] | None = None,
+    historical_activities: list[dict[str, str]] | None = None,
+    extra_activities: list[NormalizedActivity] | None = None,
+    extra_historical_activities: list[NormalizedActivity] | None = None,
 ) -> str:
     measures = measures or []
     historical_measures = historical_measures if historical_measures is not None else measures
-    total_distance_km = sum(_float_value(activity.get("distance_km", "")) for activity in activities)
-    total_duration_min = sum(_float_value(activity.get("moving_time_min", "")) for activity in activities)
+    historical_activities = historical_activities if historical_activities is not None else activities
+    extra_activities = extra_activities or []
+    extra_historical_activities = extra_historical_activities if extra_historical_activities is not None else extra_activities
+    deduplicated_activities = deduplicate_activities([*_normalize_strava_activities(activities), *extra_activities])
+    primary_today_activities = primary_activities(deduplicated_activities)
+    historical_primary_activities = primary_activities(
+        deduplicate_activities([*_normalize_strava_activities(historical_activities), *extra_historical_activities])
+    )
+    total_distance_km = sum(
+        activity.distance_km or 0.0
+        for activity in primary_today_activities
+        if activity.activity_type != "swim"
+    )
+    total_duration_min = sum(activity.duration_min for activity in primary_today_activities)
     walking_distance_km = sum(
-        _float_value(activity.get("distance_km", ""))
-        for activity in activities
+        activity.distance_km or 0.0
+        for activity in primary_today_activities
         if _is_walking_activity(activity)
     )
-    activity_types = Counter(activity.get("sport_type") or "Unknown" for activity in activities)
-    activity_level = _activity_level(total_distance_km, len(activities))
+    walking_duration_min = sum(
+        activity.duration_min
+        for activity in primary_today_activities
+        if _is_walking_activity(activity)
+    )
+    swimming_distance_km = sum(
+        activity.distance_km or 0.0
+        for activity in primary_today_activities
+        if activity.activity_type == "swim"
+    )
+    swimming_duration_min = sum(
+        activity.duration_min
+        for activity in primary_today_activities
+        if activity.activity_type == "swim"
+    )
+    activity_level = _activity_level(total_distance_km, len(primary_today_activities))
     recovery_compatibility = _recovery_compatibility(activity_level)
     weight_metrics = _weight_metrics(historical_measures, target_date)
+    walking_metrics = _walking_metrics(historical_primary_activities, target_date)
+    coverage = coverage_summary(deduplicated_activities)
 
     lines = [
         f"# Today Context - {target_date.isoformat()}",
         "",
-        "## Level 2: Derived Metrics",
+        "## Summary",
         "",
-        f"- Activity level: {activity_level} ({total_distance_km:.2f} km total)",
-        f"- Recovery compatibility: {recovery_compatibility} (deterministic from activity level)",
-        f"- Total walking distance: {walking_distance_km:.2f} km",
-        f"- Total moving time: {total_duration_min:.0f} min",
+        f"- Activity level: {activity_level}",
+        f"- Recovery compatibility: {recovery_compatibility}",
+        f"- Walking: {walking_distance_km:.2f} km / {walking_duration_min:.0f} min",
+        f"- Walking trend: {walking_metrics['trend']}",
         f"- Current weight: {weight_metrics['current_weight']}",
-        f"- 7-day average weight: {weight_metrics['avg_7d']}",
-        f"- 30-day average weight: {weight_metrics['avg_30d']}",
         f"- Weight trend: {weight_metrics['trend']}",
-        "",
-        "Assumptions: activity thresholds are None = no activities or 0 km, Light <= 5 km, "
-        "Moderate <= 12 km, High > 12 km. Walking includes sport types containing walk or hike. "
-        "Weight trend compares the current 7-day average with the previous 7-day average; "
-        "at least one weight in each 7-day window is required.",
-        "",
-        "## Level 3: AI Handoff",
-        "",
-        _ai_handoff(
-            activities=activities,
-            activity_level=activity_level,
-            recovery_compatibility=recovery_compatibility,
-            total_distance_km=total_distance_km,
-            total_duration_min=total_duration_min,
-            walking_distance_km=walking_distance_km,
-            weight_metrics=weight_metrics,
-        ),
-        "",
-        "## Strava",
-        "",
     ]
 
-    if not activities:
-        lines.append("No Strava activities found for this date.")
-        lines.append("")
-    else:
-        lines.extend(
-            [
-                f"- Activities: {len(activities)}",
-                f"- Distance: {total_distance_km:.2f} km",
-                f"- Moving time: {total_duration_min:.0f} min",
-                f"- Types: {_format_activity_types(activity_types)}",
-                "",
-                "### Activities",
-                "",
-            ]
-        )
+    if swimming_distance_km > 0 or swimming_duration_min > 0:
+        lines.append(f"- Swimming: {swimming_distance_km:.2f} km / {swimming_duration_min:.0f} min")
 
-        for activity in activities:
+    lines.extend(
+        [
+            "",
+            "## Trends",
+            "",
+            f"- 7-day avg walking: {walking_metrics['avg_7d']}",
+            f"- 30-day avg walking: {walking_metrics['avg_30d']}",
+            f"- 7-day avg weight: {weight_metrics['avg_7d']}",
+            f"- 30-day avg weight: {weight_metrics['avg_30d']}",
+            "",
+            "## Data Coverage",
+            "",
+            f"- Sources: {coverage['sources']}",
+            f"- Primary activities: {coverage['after']}",
+            f"- Deduplicated activities: {coverage['deduplicated_pairs']}",
+            "",
+            "## Handoff",
+            "",
+            _ai_handoff(
+                activities=primary_today_activities,
+                activity_level=activity_level,
+                total_duration_min=total_duration_min,
+                walking_distance_km=walking_distance_km,
+                swimming_distance_km=swimming_distance_km,
+                swimming_duration_min=swimming_duration_min,
+                walking_metrics=walking_metrics,
+                weight_metrics=weight_metrics,
+            ),
+            "",
+        ]
+    )
+
+    if primary_today_activities:
+        lines.extend(["## Activities", ""])
+        for activity in primary_today_activities:
             lines.append(
                 "- "
-                f"{activity.get('sport_type') or 'Unknown'}: "
-                f"{activity.get('name') or 'Untitled'} "
-                f"({activity.get('distance_km') or '0.00'} km, "
-                f"{_format_minutes(activity.get('moving_time_min', ''))})"
+                f"{activity.raw_type or 'Unknown'}: "
+                f"{_display_activity_name(activity)} "
+                f"({_format_distance(activity.distance_km)}, "
+                f"{activity.duration_min:.0f} min)"
             )
         lines.append("")
 
-    lines.extend(["## Withings", ""])
-
-    if not measures:
-        lines.append("No Withings body measurements found for this date.")
+    if measures:
+        lines.extend(["## Body", ""])
+        for measure in measures:
+            lines.append(
+                "- "
+                f"{measure.get('type_name') or 'measurement'}: "
+                f"{measure.get('value') or '0.00'} {measure.get('unit') or ''}".rstrip()
+            )
         lines.append("")
-        return "\n".join(lines)
-
-    for measure in measures:
-        lines.append(
-            "- "
-            f"{measure.get('type_name') or 'measurement'}: "
-            f"{measure.get('value') or '0.00'} {measure.get('unit') or ''}".rstrip()
-        )
-
-    lines.append("")
     return "\n".join(lines)
 
 
@@ -185,6 +244,59 @@ def _weight_metrics(measures: list[dict[str, str]], target_date: date) -> dict[s
         "avg_30d": _format_average_weight(avg_30d),
         "trend": _weight_trend(current_7d, previous_7d),
     }
+
+
+def _walking_metrics(activities: list[NormalizedActivity], target_date: date) -> dict[str, str]:
+    current_7d = _average_daily_walking_distance(activities, target_date, days=7)
+    previous_7d = _average_daily_walking_distance(activities, target_date - _date_delta(7), days=7)
+    avg_30d = _average_daily_walking_distance(activities, target_date, days=30)
+    return {
+        "avg_7d": _format_average_distance(current_7d),
+        "avg_30d": _format_average_distance(avg_30d),
+        "trend": _distance_trend(current_7d, previous_7d),
+    }
+
+
+def _average_daily_walking_distance(
+    activities: list[NormalizedActivity],
+    end_date: date,
+    *,
+    days: int,
+) -> float | None:
+    start_date = end_date - _date_delta(days - 1)
+    activities_in_window = [
+        activity
+        for activity in activities
+        if (activity_date := _activity_date(activity.start_time)) is not None
+        and start_date <= activity_date <= end_date
+    ]
+    if not activities_in_window:
+        return None
+
+    total_walking_distance = sum(
+        activity.distance_km or 0.0
+        for activity in activities_in_window
+        if _is_walking_activity(activity)
+    )
+    return total_walking_distance / days
+
+
+def _format_average_distance(value: float | None) -> str:
+    if value is None:
+        return "Unknown"
+    return f"{value:.2f} km/day"
+
+
+def _distance_trend(current_7d: float | None, previous_7d: float | None) -> str:
+    if current_7d is None or previous_7d is None:
+        return "Unknown"
+
+    difference = current_7d - previous_7d
+    if difference <= -0.5:
+        return "Decreasing"
+    if difference >= 0.5:
+        return "Increasing"
+    return "Stable"
 
 
 def _format_weight(measure: dict[str, str]) -> str:
@@ -231,49 +343,82 @@ def _measure_date(measure: dict[str, str]) -> date | None:
         return None
 
 
+def _activity_date(raw_value: str) -> date | None:
+    try:
+        return date.fromisoformat(raw_value[:10])
+    except ValueError:
+        return None
+
+
 def _date_delta(days: int) -> timedelta:
     return timedelta(days=days)
 
 
 def _ai_handoff(
     *,
-    activities: list[dict[str, str]],
+    activities: list[NormalizedActivity],
     activity_level: str,
-    recovery_compatibility: str,
-    total_distance_km: float,
     total_duration_min: float,
     walking_distance_km: float,
+    swimming_distance_km: float,
+    swimming_duration_min: float,
+    walking_metrics: dict[str, str],
     weight_metrics: dict[str, str],
 ) -> str:
     if not activities:
-        activity_sentence = "No Strava activities found for this date."
+        activity_sentence = "No primary activities found for this date."
     else:
         activity_sentence = (
-            f"{activity_level} activity day with {len(activities)} Strava activities, "
-            f"{total_distance_km:.2f} km total, {walking_distance_km:.2f} km walking, "
+            f"{activity_level} walking day with {len(activities)} primary activities, "
+            f"{walking_distance_km:.2f} km walking, "
             f"and {total_duration_min:.0f} min moving time."
         )
+    swimming_sentence = (
+        f" Swimming included {swimming_distance_km:.2f} km and {swimming_duration_min:.0f} min."
+        if swimming_duration_min > 0
+        else ""
+    )
     return (
-        f"{activity_sentence} Recovery compatibility is {recovery_compatibility}. "
+        f"{activity_sentence}{swimming_sentence} Walking trend is {walking_metrics['trend']}. "
         f"Current weight is {weight_metrics['current_weight']}; "
         f"weight trend is {weight_metrics['trend']}."
     )
 
 
-def _is_walking_activity(activity: dict[str, str]) -> bool:
+def _is_walking_activity(activity: dict[str, str] | NormalizedActivity) -> bool:
+    if isinstance(activity, NormalizedActivity):
+        return activity.activity_type == "walk"
     sport_type = activity.get("sport_type", "").lower()
     return "walk" in sport_type or "hike" in sport_type
 
 
-def _format_activity_types(activity_types: Counter[str]) -> str:
-    return ", ".join(
-        f"{activity_type} x{count}" if count > 1 else activity_type
-        for activity_type, count in sorted(activity_types.items())
-    )
+def _format_distance(value: float | None) -> str:
+    if value is None:
+        return "unknown distance"
+    return f"{value:.2f} km"
 
 
-def _format_minutes(value: str) -> str:
-    return f"{_float_value(value):.0f} min"
+def _display_activity_name(activity: NormalizedActivity) -> str:
+    name = activity.name or f"{activity.source}:{activity.source_id}"
+    translations = {
+        "屋外で歩行": "Outdoor Walking",
+        "屋内で歩行": "Indoor Walking",
+        "屋外ランニング": "Outdoor Running",
+        "屋外でランニング": "Outdoor Running",
+        "ランニング": "Running",
+        "室内ランニング": "Indoor Running",
+        "屋内ランニング": "Indoor Running",
+        "トレッドミル": "Treadmill Running",
+    }
+    return translations.get(name, name)
+
+
+def _normalize_strava_activities(activities: list[dict[str, str]]) -> list[NormalizedActivity]:
+    return [normalize_strava_activity(activity) for activity in activities]
+
+
+def _normalize_withings_activities(activities: list[dict[str, str]]) -> list[NormalizedActivity]:
+    return [normalize_withings_activity(activity) for activity in activities]
 
 
 def _float_value(value: str) -> float:
