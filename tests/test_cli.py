@@ -6,10 +6,26 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from life_log_sync.cli import main
+from life_log_sync.cli import build_parser, main
 
 
 class CliTest(unittest.TestCase):
+    def test_parser_accepts_new_sync_and_backfill_commands(self) -> None:
+        parser = build_parser()
+
+        sync_args = parser.parse_args(["sync", "withings"])
+        backfill_args = parser.parse_args(["backfill", "withings", "--from", "2026-01-01"])
+        strava_backfill_args = parser.parse_args(["backfill", "strava", "--from", "2026-01-01"])
+
+        self.assertEqual(sync_args.source, "sync")
+        self.assertEqual(sync_args.command, "withings")
+        self.assertEqual(backfill_args.source, "backfill")
+        self.assertEqual(backfill_args.command, "withings")
+        self.assertEqual(backfill_args.from_date.isoformat(), "2026-01-01")
+        self.assertEqual(strava_backfill_args.source, "backfill")
+        self.assertEqual(strava_backfill_args.command, "strava")
+        self.assertEqual(strava_backfill_args.from_date.isoformat(), "2026-01-01")
+
     def test_context_today_prints_generated_content(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

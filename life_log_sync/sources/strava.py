@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import csv
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,8 +38,24 @@ def sync(config: AppConfig) -> list[Path]:
             per_page=config.strava.per_page,
         )
 
-    written_paths = write_activities(config, activities)
+    written_paths = write_activities(config, activities, merge=True)
     return written_paths
+
+
+def backfill(config: AppConfig, *, start_date: date, end_date: date | None = None) -> list[Path]:
+    requests = _requests()
+
+    with requests.Session() as session:
+        access_token = get_access_token(session, config)
+        activities = fetch_activities_since(
+            session,
+            access_token,
+            start_date=start_date,
+            end_date=end_date,
+            per_page=config.strava.per_page,
+        )
+
+    return write_activities(config, activities, merge=True)
 
 
 def get_access_token(session: Any, config: AppConfig) -> str:
@@ -76,23 +93,63 @@ def refresh_access_token(session: Any, config: AppConfig) -> str:
 
 def fetch_recent_activities(session: Any, access_token: str, *, days: int, per_page: int) -> list[dict[str, Any]]:
     after = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
-    response = session.get(
-        API_URL,
-        headers={"Authorization": f"Bearer {access_token}"},
-        params={"after": after, "page": 1, "per_page": per_page},
-        timeout=TIMEOUT_SECONDS,
-    )
-    _raise_for_strava_error(response, "Strava API request failed")
+    return fetch_activities(session, access_token, after=after, per_page=per_page)
 
-    activities = _json_response(response, "Strava API response was not valid JSON.")
-    if not isinstance(activities, list):
-        raise SystemExit("Strava API response did not contain a list of activities.")
-    return activities
+
+def fetch_activities_since(
+    session: Any,
+    access_token: str,
+    *,
+    start_date: date,
+    end_date: date | None,
+    per_page: int,
+) -> list[dict[str, Any]]:
+    if end_date is not None and start_date > end_date:
+        raise SystemExit("Strava start date must be on or before end date.")
+
+    after = int(datetime.combine(start_date, time.min, tzinfo=timezone.utc).timestamp())
+    before = int(datetime.combine(end_date, time.max, tzinfo=timezone.utc).timestamp()) if end_date else None
+    return fetch_activities(session, access_token, after=after, before=before, per_page=per_page)
+
+
+def fetch_activities(
+    session: Any,
+    access_token: str,
+    *,
+    after: int,
+    per_page: int,
+    before: int | None = None,
+) -> list[dict[str, Any]]:
+    activities: list[dict[str, Any]] = []
+    page = 1
+
+    while True:
+        params = {"after": after, "page": page, "per_page": per_page}
+        if before is not None:
+            params["before"] = before
+        response = session.get(
+            API_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+            params=params,
+            timeout=TIMEOUT_SECONDS,
+        )
+        _raise_for_strava_error(response, "Strava API request failed")
+
+        page_activities = _json_response(response, "Strava API response was not valid JSON.")
+        if not isinstance(page_activities, list):
+            raise SystemExit("Strava API response did not contain a list of activities.")
+
+        activities.extend(page_activities)
+        if len(page_activities) < per_page:
+            return activities
+        page += 1
 
 
 def write_activities(
     config: AppConfig,
     activities: list[dict[str, Any]],
+    *,
+    merge: bool = False,
 ) -> list[Path]:
     written_paths: list[Path] = []
     raw_dir = config.strava.raw_dir
@@ -104,8 +161,33 @@ def write_activities(
         written_paths.append(write_json_file(raw_dir / f"{activity_id}.json", activity))
 
     rows = [normalize_activity(activity) for activity in activities]
+    if merge:
+        rows = merge_activity_rows(read_activity_rows(config.strava.activities_csv), rows)
     written_paths.append(write_csv_file(config.strava.activities_csv, rows, ACTIVITY_FIELDS))
     return written_paths
+
+
+def read_activity_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
+def merge_activity_rows(
+    existing_rows: list[dict[str, Any]],
+    new_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    for row in [*existing_rows, *new_rows]:
+        activity_id = str(row.get("id", "")).strip()
+        if activity_id:
+            rows_by_id[activity_id] = row
+    return sorted(
+        rows_by_id.values(),
+        key=lambda row: (str(row.get("start_date_local", "")), str(row.get("id", ""))),
+    )
 
 
 def normalize_activity(activity: dict[str, Any]) -> dict[str, Any]:

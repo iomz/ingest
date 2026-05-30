@@ -4,10 +4,36 @@ import csv
 import json
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from life_log_sync.config import load_config
-from life_log_sync.sources.withings import normalize_measure_groups, write_measures
+from life_log_sync.sources.withings import (
+    fetch_body_measures_windowed,
+    merge_measure_rows,
+    normalize_measure_groups,
+    write_measures,
+)
+
+
+class FakeResponse:
+    def __init__(self, body: object) -> None:
+        self.body = body
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> object:
+        return {"status": 0, "body": self.body}
+
+
+class FakeSession:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def post(self, *args: object, **kwargs: object) -> FakeResponse:
+        self.calls.append(kwargs)
+        return FakeResponse({"measuregrps": []})
 
 
 class WithingsTest(unittest.TestCase):
@@ -69,6 +95,57 @@ access_token = "access"
             with csv_path.open(encoding="utf-8", newline="") as csv_file:
                 rows = list(csv.DictReader(csv_file))
             self.assertEqual(rows[0]["type_name"], "weight")
+
+    def test_merges_measure_rows_idempotently(self) -> None:
+        existing_rows = [
+            {
+                "grpid": "123",
+                "date": "2026-05-29",
+                "datetime_local": "2026-05-29T06:00:00",
+                "type": "1",
+                "type_name": "weight",
+                "value": "70.50",
+                "unit": "kg",
+            }
+        ]
+        new_rows = [
+            {
+                "grpid": "123",
+                "date": "2026-05-29",
+                "datetime_local": "2026-05-29T06:00:00",
+                "type": "1",
+                "type_name": "weight",
+                "value": "70.50",
+                "unit": "kg",
+            },
+            {
+                "grpid": "124",
+                "date": "2026-05-30",
+                "datetime_local": "2026-05-30T06:00:00",
+                "type": "1",
+                "type_name": "weight",
+                "value": "70.40",
+                "unit": "kg",
+            },
+        ]
+
+        rows = merge_measure_rows(existing_rows, new_rows)
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row["grpid"] for row in rows], ["123", "124"])
+
+    def test_fetches_withings_backfill_in_date_windows(self) -> None:
+        session = FakeSession()
+
+        body = fetch_body_measures_windowed(
+            session,
+            "access",
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 4, 15),
+        )
+
+        self.assertEqual(body, {"measuregrps": []})
+        self.assertEqual(len(session.calls), 2)
 
 
 if __name__ == "__main__":

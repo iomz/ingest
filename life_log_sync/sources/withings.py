@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ from life_log_sync.config import AppConfig, update_withings_tokens
 TOKEN_URL = "https://wbsapi.withings.net/v2/oauth2"
 MEASURE_URL = "https://wbsapi.withings.net/measure"
 TIMEOUT_SECONDS = 30
+BACKFILL_WINDOW_DAYS = 90
+DAILY_SYNC_DAYS = 7
 
 BODY_MEASURE_TYPES = {
     1: ("weight", "kg"),
@@ -35,15 +38,22 @@ MEASURE_FIELDS = [
 
 
 def sync(config: AppConfig) -> list[Path]:
-    requests = _requests()
     today = date.today()
-    start = today - timedelta(days=config.withings.days)
+    return sync_range(config, today - timedelta(days=DAILY_SYNC_DAYS - 1), today, raw_name="body_measures_recent.json")
+
+
+def backfill(config: AppConfig, *, start_date: date, end_date: date | None = None) -> list[Path]:
+    return sync_range(config, start_date, end_date or date.today(), raw_name="body_measures_backfill.json")
+
+
+def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name: str) -> list[Path]:
+    requests = _requests()
 
     with requests.Session() as session:
         access_token = get_access_token(session, config)
-        measures = fetch_body_measures(session, access_token, start_date=start, end_date=today)
+        measures = fetch_body_measures_windowed(session, access_token, start_date=start_date, end_date=end_date)
 
-    return write_measures(config, measures)
+    return write_measures(config, measures, raw_name=raw_name, merge=True)
 
 
 def get_access_token(session: Any, config: AppConfig) -> str:
@@ -106,16 +116,81 @@ def fetch_body_measures(
     return _withings_body(response, "Withings measure request failed")
 
 
-def write_measures(config: AppConfig, body: dict[str, Any]) -> list[Path]:
+def fetch_body_measures_windowed(
+    session: Any,
+    access_token: str,
+    *,
+    start_date: date,
+    end_date: date,
+) -> dict[str, Any]:
+    if start_date > end_date:
+        raise SystemExit("Withings start date must be on or before end date.")
+
+    measuregrps: list[dict[str, Any]] = []
+    window_start = start_date
+    while window_start <= end_date:
+        window_end = min(window_start + timedelta(days=BACKFILL_WINDOW_DAYS - 1), end_date)
+        body = fetch_body_measures(session, access_token, start_date=window_start, end_date=window_end)
+        window_groups = body.get("measuregrps", [])
+        if not isinstance(window_groups, list):
+            raise SystemExit("Withings measure response did not contain measuregrps.")
+        measuregrps.extend(window_groups)
+        window_start = window_end + timedelta(days=1)
+    return {"measuregrps": measuregrps}
+
+
+def write_measures(
+    config: AppConfig,
+    body: dict[str, Any],
+    *,
+    raw_name: str = "body_measures.json",
+    merge: bool = False,
+) -> list[Path]:
     written_paths: list[Path] = []
     measuregrps = body.get("measuregrps", [])
     if not isinstance(measuregrps, list):
         raise SystemExit("Withings measure response did not contain measuregrps.")
 
-    written_paths.append(write_json_file(config.withings.raw_dir / "body_measures.json", body))
+    written_paths.append(write_json_file(config.withings.raw_dir / raw_name, body))
     rows = normalize_measure_groups(measuregrps)
+    if merge:
+        rows = merge_measure_rows(read_measure_rows(config.withings.measures_csv), rows)
     written_paths.append(write_csv_file(config.withings.measures_csv, rows, MEASURE_FIELDS))
     return written_paths
+
+
+def read_measure_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
+def merge_measure_rows(
+    existing_rows: list[dict[str, Any]],
+    new_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in [*existing_rows, *new_rows]:
+        rows_by_key[_measure_row_key(row)] = row
+    return sorted(
+        rows_by_key.values(),
+        key=lambda row: (
+            str(row.get("date", "")),
+            str(row.get("datetime_local", "")),
+            str(row.get("grpid", "")),
+            str(row.get("type", "")),
+        ),
+    )
+
+
+def _measure_row_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("grpid", "")),
+        str(row.get("type", "")),
+        str(row.get("datetime_local", "")),
+    )
 
 
 def normalize_measure_groups(measuregrps: list[dict[str, Any]]) -> list[dict[str, Any]]:

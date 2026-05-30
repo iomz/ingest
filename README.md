@@ -22,6 +22,13 @@ The package is split into small responsibilities:
 This keeps Strava simple today while leaving a clear place for Withings,
 Superlist, and other sources later.
 
+Sync and context generation are separate:
+
+- `life-log-sync backfill withings` fetches historical Withings data.
+- `life-log-sync backfill strava` fetches historical Strava data.
+- `life-log-sync sync withings` fetches a recent Withings window for daily use.
+- `life-log-sync context today` reads local CSV data only and does not call external APIs.
+
 ## Configuration
 
 `life-log-sync` keeps personal configuration and generated data out of this
@@ -64,7 +71,8 @@ ${XDG_DATA_HOME:-~/.local/share}/life-log-sync/
 │   └── activities.csv
 ├── withings/
 │   ├── raw/
-│   │   └── body_measures.json
+│   │   ├── body_measures_backfill.json
+│   │   └── body_measures_recent.json
 │   └── body_measures.csv
 └── generated/
     └── today_context.md
@@ -142,17 +150,25 @@ read `/athlete` is not enough for `/athlete/activities`; Strava returns
 For one-off use, you can set `strava.access_token` in the config file when
 refresh credentials are not configured.
 
-Run:
+Backfill historical activities:
 
 ```sh
-life-log-sync strava sync
+life-log-sync backfill strava --from 2024-01-01
+```
+
+Run daily incremental sync:
+
+```sh
+life-log-sync sync strava
 ```
 
 Without installing the console command, run through Poetry:
 
 ```sh
-poetry run life-log-sync strava sync
+poetry run life-log-sync sync strava
 ```
+
+The legacy `life-log-sync strava sync` command is still accepted.
 
 ## Withings
 
@@ -163,7 +179,23 @@ Withings requires OAuth user tokens. `client_id` and `client_secret` identify
 the app, but user data access requires `withings.refresh_token` or
 `withings.access_token` in the config file.
 
-Run:
+Backfill historical measurements:
+
+```sh
+life-log-sync backfill withings --from 2024-01-01
+```
+
+Run daily incremental sync:
+
+```sh
+life-log-sync sync withings
+```
+
+The daily sync uses a conservative recent window and merges rows into
+`withings/body_measures.csv`. Backfill uses fixed date windows and the same
+merge path, so rerunning either command does not duplicate normalized rows.
+
+The legacy command is still accepted:
 
 ```sh
 life-log-sync withings sync
