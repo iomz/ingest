@@ -35,7 +35,13 @@ ingest today
 Specific date:
 
 ```sh
-ingest today --date 2026-05-29
+ingest day 2026-05-29
+```
+
+Previous day:
+
+```sh
+ingest yesterday
 ```
 
 Source maintenance:
@@ -139,6 +145,7 @@ Run CLI from Poetry:
 ```sh
 poetry run ingest --help
 poetry run ingest today
+poetry run ingest day 2026-05-29
 ```
 
 Run tests:

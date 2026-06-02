@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
-from ingest.config import load_config
+from ingest.config import AppConfig, load_config
 from ingest.context import (
     generate_daily_context,
     measures_for_date,
@@ -26,13 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="source", required=True)
 
-    today_parser = subparsers.add_parser("today", help="Gather data and render generated/daily_context.md.")
-    today_parser.add_argument(
-        "--date",
-        dest="target_date",
-        type=_date_arg,
-        help="Target date in YYYY-MM-DD format. Defaults to today.",
-    )
+    subparsers.add_parser("today", help="Gather data and render context for today.")
+
+    day_parser = subparsers.add_parser("day", help="Gather data and render context for a date.")
+    day_parser.add_argument("target_date", type=_date_arg, help="Target date in YYYY-MM-DD format.")
+
+    subparsers.add_parser("yesterday", help="Gather data and render context for yesterday.")
 
     backfill_parser = subparsers.add_parser("backfill", help="Backfill historical data.")
     backfill_subparsers = backfill_parser.add_subparsers(dest="command", required=True)
@@ -108,15 +107,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.source == "today":
-        target = args.target_date or date.today()
-        withings_measures = measures_for_date(read_withings_measures(config.withings.measures_csv), target)
-        withings_workouts = withings_activities_for_date(read_withings_activities(config.withings.workouts_csv), target)
-        if target == date.today() or not withings_measures or not withings_workouts:
-            withings.sync(config)
-        path = generate_daily_context(config, target)
-        print(path)
-        print(path.read_text(encoding="utf-8"), end="")
-        return 0
+        return _print_daily_context(config, date.today())
+
+    if args.source == "day":
+        return _print_daily_context(config, args.target_date)
+
+    if args.source == "yesterday":
+        return _print_daily_context(config, date.today() - timedelta(days=1))
 
     parser.error("Unsupported command.")
     return 2
@@ -127,6 +124,17 @@ def _date_arg(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("date must be in YYYY-MM-DD format") from exc
+
+
+def _print_daily_context(config: AppConfig, target: date) -> int:
+    withings_measures = measures_for_date(read_withings_measures(config.withings.measures_csv), target)
+    withings_workouts = withings_activities_for_date(read_withings_activities(config.withings.workouts_csv), target)
+    if target == date.today() or not withings_measures or not withings_workouts:
+        withings.sync(config)
+    path = generate_daily_context(config, target)
+    print(path)
+    print(path.read_text(encoding="utf-8"), end="")
+    return 0
 
 
 if __name__ == "__main__":
