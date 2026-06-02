@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-APP_NAME = "life-log-sync"
+APP_NAME = "ingest"
 
 
 def resolve_data_dir(override: Path | str | None = None) -> Path:

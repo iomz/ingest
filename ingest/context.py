@@ -1,47 +1,49 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
-from life_log_sync.activities import (
+from ingest.activities import (
     NormalizedActivity,
-    coverage_summary,
-    deduplicate_activities,
-    normalize_strava_activity,
     normalize_withings_activity,
-    primary_activities,
 )
-from life_log_sync.app_data import write_text_file
-from life_log_sync.config import AppConfig
+from ingest.app_data import write_text_file
+from ingest.config import AppConfig
+
+
+@dataclass(frozen=True)
+class DailyState:
+    target_date: date
+    activities: list[NormalizedActivity]
+    measures: list[dict[str, str]]
+    historical_activities: list[NormalizedActivity]
+    historical_measures: list[dict[str, str]]
+
+
+def generate_daily_context(config: AppConfig, target_date: date | None = None) -> Path:
+    target = target_date or date.today()
+    state = build_daily_state(config, target)
+    return write_text_file(config.daily_context_path, _render_daily_state(state))
 
 
 def generate_today_context(config: AppConfig, target_date: date | None = None) -> Path:
-    target = target_date or date.today()
-    all_activities = read_strava_activities(config.strava.activities_csv)
+    return generate_daily_context(config, target_date)
+
+
+def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
     withings_activities = read_withings_activities(config.withings.workouts_csv)
-    activities = activities_for_date(all_activities, target)
-    withings_activities_for_target = withings_activities_for_date(withings_activities, target)
+    withings_activities_for_target = withings_activities_for_date(withings_activities, target_date)
     all_measures = read_withings_measures(config.withings.measures_csv)
-    measures = measures_for_date(all_measures, target)
-    content = render_today_context(
-        target,
-        activities,
-        measures,
-        all_measures,
-        all_activities,
-        extra_activities=_normalize_withings_activities(withings_activities_for_target),
-        extra_historical_activities=_normalize_withings_activities(withings_activities),
+    measures = measures_for_date(all_measures, target_date)
+    return DailyState(
+        target_date=target_date,
+        activities=_normalize_withings_activities(withings_activities_for_target),
+        measures=measures,
+        historical_activities=_normalize_withings_activities(withings_activities),
+        historical_measures=all_measures,
     )
-    return write_text_file(config.today_context_path, content)
-
-
-def read_strava_activities(path: Path) -> list[dict[str, str]]:
-    if not path.exists():
-        return []
-
-    with path.open(encoding="utf-8", newline="") as csv_file:
-        return list(csv.DictReader(csv_file))
 
 
 def read_withings_measures(path: Path) -> list[dict[str, str]]:
@@ -60,15 +62,6 @@ def read_withings_activities(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(csv_file))
 
 
-def activities_for_date(activities: list[dict[str, str]], target_date: date) -> list[dict[str, str]]:
-    target = target_date.isoformat()
-    return [
-        activity
-        for activity in activities
-        if activity.get("start_date_local", "").startswith(target)
-    ]
-
-
 def withings_activities_for_date(activities: list[dict[str, str]], target_date: date) -> list[dict[str, str]]:
     target = target_date.isoformat()
     return [
@@ -83,25 +76,41 @@ def measures_for_date(measures: list[dict[str, str]], target_date: date) -> list
     return [measure for measure in measures if measure.get("date") == target]
 
 
+def render_daily_context(
+    target_date: date,
+    activities: list[dict[str, str]],
+    measures: list[dict[str, str]] | None = None,
+    historical_measures: list[dict[str, str]] | None = None,
+    historical_activities: list[dict[str, str]] | None = None,
+) -> str:
+    measures = measures or []
+    historical_measures = historical_measures if historical_measures is not None else measures
+    historical_activities = historical_activities if historical_activities is not None else activities
+    state = DailyState(
+        target_date=target_date,
+        activities=_normalize_withings_activities(activities),
+        measures=measures,
+        historical_activities=_normalize_withings_activities(historical_activities),
+        historical_measures=historical_measures,
+    )
+    return _render_daily_state(state)
+
+
 def render_today_context(
     target_date: date,
     activities: list[dict[str, str]],
     measures: list[dict[str, str]] | None = None,
     historical_measures: list[dict[str, str]] | None = None,
     historical_activities: list[dict[str, str]] | None = None,
-    extra_activities: list[NormalizedActivity] | None = None,
-    extra_historical_activities: list[NormalizedActivity] | None = None,
 ) -> str:
-    measures = measures or []
-    historical_measures = historical_measures if historical_measures is not None else measures
-    historical_activities = historical_activities if historical_activities is not None else activities
-    extra_activities = extra_activities or []
-    extra_historical_activities = extra_historical_activities if extra_historical_activities is not None else extra_activities
-    deduplicated_activities = deduplicate_activities([*_normalize_strava_activities(activities), *extra_activities])
-    primary_today_activities = primary_activities(deduplicated_activities)
-    historical_primary_activities = primary_activities(
-        deduplicate_activities([*_normalize_strava_activities(historical_activities), *extra_historical_activities])
-    )
+    return render_daily_context(target_date, activities, measures, historical_measures, historical_activities)
+
+
+def _render_daily_state(state: DailyState) -> str:
+    target_date = state.target_date
+    primary_today_activities = state.activities
+    historical_normalized_activities = state.historical_activities
+    measures = state.measures
     total_distance_km = sum(
         activity.distance_km or 0.0
         for activity in primary_today_activities
@@ -130,12 +139,12 @@ def render_today_context(
     )
     activity_level = _activity_level(total_distance_km, len(primary_today_activities))
     recovery_compatibility = _recovery_compatibility(activity_level)
-    weight_metrics = _weight_metrics(historical_measures, target_date)
-    walking_metrics = _walking_metrics(historical_primary_activities, target_date)
-    coverage = coverage_summary(deduplicated_activities)
+    weight_metrics = _weight_metrics(state.historical_measures, target_date)
+    walking_metrics = _walking_metrics(historical_normalized_activities, target_date)
+    sources = _activity_sources(primary_today_activities)
 
     lines = [
-        f"# Today Context - {target_date.isoformat()}",
+        f"# Daily Context - {target_date.isoformat()}",
         "",
         "## Summary",
         "",
@@ -162,9 +171,8 @@ def render_today_context(
             "",
             "## Data Coverage",
             "",
-            f"- Sources: {coverage['sources']}",
-            f"- Primary activities: {coverage['after']}",
-            f"- Deduplicated activities: {coverage['deduplicated_pairs']}",
+            f"- Sources: {sources}",
+            f"- Activities: {len(primary_today_activities)}",
             "",
             "## Handoff",
             "",
@@ -385,11 +393,8 @@ def _ai_handoff(
     )
 
 
-def _is_walking_activity(activity: dict[str, str] | NormalizedActivity) -> bool:
-    if isinstance(activity, NormalizedActivity):
-        return activity.activity_type == "walk"
-    sport_type = activity.get("sport_type", "").lower()
-    return "walk" in sport_type or "hike" in sport_type
+def _is_walking_activity(activity: NormalizedActivity) -> bool:
+    return activity.activity_type == "walk"
 
 
 def _format_distance(value: float | None) -> str:
@@ -413,12 +418,13 @@ def _display_activity_name(activity: NormalizedActivity) -> str:
     return translations.get(name, name)
 
 
-def _normalize_strava_activities(activities: list[dict[str, str]]) -> list[NormalizedActivity]:
-    return [normalize_strava_activity(activity) for activity in activities]
-
-
 def _normalize_withings_activities(activities: list[dict[str, str]]) -> list[NormalizedActivity]:
     return [normalize_withings_activity(activity) for activity in activities]
+
+
+def _activity_sources(activities: list[NormalizedActivity]) -> str:
+    sources = sorted({activity.source.capitalize() for activity in activities})
+    return ", ".join(sources) if sources else "None"
 
 
 def _float_value(value: str) -> float:

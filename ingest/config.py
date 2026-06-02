@@ -9,23 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from life_log_sync.app_data import default_config_path, resolve_data_dir
+from ingest.app_data import default_config_path, resolve_data_dir
 
 DEFAULT_CONFIG_PATH = default_config_path()
 DEFAULT_CONFIG_EXAMPLE_PATH = Path("config.example.toml")
-
-
-@dataclass(frozen=True)
-class StravaConfig:
-    client_id: str
-    client_secret: str
-    refresh_token: str
-    access_token: str
-    expires_at: int
-    activities_csv: Path
-    raw_dir: Path
-    days: int
-    per_page: int
 
 
 @dataclass(frozen=True)
@@ -47,9 +34,12 @@ class AppConfig:
     data: dict[str, Any]
     data_dir: Path
     generated_dir: Path
-    today_context_path: Path
-    strava: StravaConfig
+    daily_context_path: Path
     withings: WithingsConfig
+
+    @property
+    def today_context_path(self) -> Path:
+        return self.daily_context_path
 
 
 def load_config(path: Path | str | None = None) -> AppConfig:
@@ -67,31 +57,20 @@ def load_config(path: Path | str | None = None) -> AppConfig:
 
     data_dir = _load_data_dir(data)
     generated_dir = _configured_data_path(data_dir, data.get("generated", {}), "generated.dir", Path("generated"))
-    today_context_path = generated_dir / "today_context.md"
-    strava = _load_strava_config(data, data_dir)
+    daily_context_path = generated_dir / "daily_context.md"
     withings = _load_withings_config(data, data_dir)
     return AppConfig(
         path=config_path,
         data=data,
         data_dir=data_dir,
         generated_dir=generated_dir,
-        today_context_path=today_context_path,
-        strava=strava,
+        daily_context_path=daily_context_path,
         withings=withings,
     )
 
 
 def save_config(config: AppConfig) -> None:
     write_toml(config.data, config.path)
-
-
-def update_strava_tokens(config: AppConfig, token: dict[str, Any]) -> None:
-    strava = config.data.setdefault("strava", {})
-    strava["access_token"] = _required_token_value(token, "access_token")
-    strava["refresh_token"] = _required_token_value(token, "refresh_token")
-    if "expires_at" in token:
-        strava["expires_at"] = token["expires_at"]
-    save_config(config)
 
 
 def update_withings_tokens(config: AppConfig, token: dict[str, Any]) -> None:
@@ -160,27 +139,6 @@ def _load_data_dir(data: dict[str, Any]) -> Path:
     return resolve_data_dir(raw_path or None)
 
 
-def _load_strava_config(data: dict[str, Any], data_dir: Path) -> StravaConfig:
-    strava = data.get("strava", {})
-    sync = _strava_sync_section(data)
-    return StravaConfig(
-        client_id=str(strava.get("client_id", "")).strip(),
-        client_secret=str(strava.get("client_secret", "")).strip(),
-        refresh_token=str(strava.get("refresh_token", "")).strip(),
-        access_token=str(strava.get("access_token", "")).strip(),
-        expires_at=_int_value(strava.get("expires_at", 0), "strava.expires_at"),
-        activities_csv=_configured_data_path(
-            data_dir,
-            strava,
-            "strava.activities_csv",
-            Path("strava/activities.csv"),
-        ),
-        raw_dir=_configured_data_path(data_dir, strava, "strava.raw_dir", Path("strava/raw")),
-        days=_positive_int(sync.get("days", 30), "sync.strava.days"),
-        per_page=_positive_int(sync.get("per_page", 100), "sync.strava.per_page"),
-    )
-
-
 def _load_withings_config(data: dict[str, Any], data_dir: Path) -> WithingsConfig:
     withings = data.get("withings", {})
     sync = _withings_sync_section(data)
@@ -216,13 +174,6 @@ def _configured_data_path(data_dir: Path, section: dict[str, Any], name: str, de
     return data_dir / path
 
 
-def _strava_sync_section(data: dict[str, Any]) -> dict[str, Any]:
-    sync = data.get("sync", {})
-    if isinstance(sync.get("strava"), dict):
-        return sync["strava"]
-    return sync
-
-
 def _withings_sync_section(data: dict[str, Any]) -> dict[str, Any]:
     sync = data.get("sync", {})
     if isinstance(sync.get("withings"), dict):
@@ -230,7 +181,7 @@ def _withings_sync_section(data: dict[str, Any]) -> dict[str, Any]:
     return sync
 
 
-def _required_token_value(token: dict[str, Any], key: str, service: str = "Strava") -> str:
+def _required_token_value(token: dict[str, Any], key: str, service: str = "Withings") -> str:
     value = str(token.get(key, "")).strip()
     if not value:
         raise SystemExit(f"{service} token refresh response did not include {key}.")

@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from life_log_sync.app_data import write_csv_file, write_json_file
-from life_log_sync.config import AppConfig, update_withings_tokens
+from ingest.app_data import write_csv_file, write_json_file
+from ingest.config import AppConfig, update_withings_tokens
 
 TOKEN_URL = "https://wbsapi.withings.net/v2/oauth2"
 AUTHORIZE_URL = "https://account.withings.com/oauth2_user/authorize2"
@@ -49,8 +49,6 @@ WORKOUT_FIELDS = [
     "distance_km",
     "activity_type",
     "raw_type",
-    "dedup_group_id",
-    "is_primary",
 ]
 
 WORKOUT_CATEGORIES = {
@@ -103,7 +101,7 @@ def get_access_token(session: Any, config: AppConfig) -> str:
     )
 
 
-def authorization_url(config: AppConfig, *, redirect_uri: str, state: str = "life-log-sync") -> str:
+def authorization_url(config: AppConfig, *, redirect_uri: str, state: str = "ingest") -> str:
     _require(config.withings.client_id, "withings.client_id")
     return (
         AUTHORIZE_URL
@@ -448,8 +446,6 @@ def normalize_workouts(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "distance_km": _workout_distance_km(data),
                 "activity_type": WORKOUT_CATEGORIES.get(category, f"category_{category}"),
                 "raw_type": WORKOUT_CATEGORIES.get(category, f"category_{category}"),
-                "dedup_group_id": "",
-                "is_primary": "true",
             }
         )
     return rows

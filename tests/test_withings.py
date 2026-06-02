@@ -7,8 +7,8 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from life_log_sync.config import load_config
-from life_log_sync.sources.withings import (
+from ingest.config import load_config
+from ingest.sources.withings import (
     authorization_url,
     fetch_body_measures_windowed,
     fetch_workouts_windowed_if_available,
@@ -90,7 +90,7 @@ class WithingsTest(unittest.TestCase):
 
     def test_builds_authorization_url_with_activity_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "life-log-sync.toml"
+            config_path = Path(temp_dir) / "ingest.toml"
             config_path.write_text(
                 """
 [withings]
@@ -129,7 +129,7 @@ client_id = "client-id"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             data_dir = root / "app-data"
-            config_path = root / "life-log-sync.toml"
+            config_path = root / "ingest.toml"
             config_path.write_text(
                 f"""
 [app]
@@ -168,7 +168,7 @@ access_token = "access"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             data_dir = root / "app-data"
-            config_path = root / "life-log-sync.toml"
+            config_path = root / "ingest.toml"
             config_path.write_text(
                 f"""
 [app]
@@ -202,7 +202,21 @@ access_token = "access"
             self.assertIn(csv_path, written)
             self.assertEqual(json.loads(raw_path.read_text(encoding="utf-8"))["series"][0]["id"], 123)
             with csv_path.open(encoding="utf-8", newline="") as csv_file:
-                rows = list(csv.DictReader(csv_file))
+                reader = csv.DictReader(csv_file)
+                rows = list(reader)
+            self.assertEqual(
+                reader.fieldnames,
+                [
+                    "source",
+                    "source_id",
+                    "start_time",
+                    "end_time",
+                    "duration_min",
+                    "distance_km",
+                    "activity_type",
+                    "raw_type",
+                ],
+            )
             self.assertEqual(rows[0]["activity_type"], "walk")
 
     def test_merges_measure_rows_idempotently(self) -> None:

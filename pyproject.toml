@@ -1,7 +1,7 @@
 [project]
-name = "life-log-sync"
+name = "ingest"
 version = "0.1.0"
-description = "Sync personal life-log telemetry into an application data directory."
+description = "Collect and render personal data for AI-assisted self-review."
 authors = [{ name = "iomz" }]
 license = "MIT"
 readme = "README.md"
@@ -11,16 +11,14 @@ dependencies = [
 ]
 
 [project.scripts]
-life-log-sync = "life_log_sync.cli:main"
+ingest = "ingest.cli:main"
 
 [tool.poetry]
-packages = [{ include = "life_log_sync" }]
+packages = [{ include = "ingest" }]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
-[dependency-groups]
-dev = [
-    "pytest (>=9.0.3,<10.0.0)"
-]
+[tool.poetry.group.dev.dependencies]
+pytest = ">=9.0.3,<10.0.0"

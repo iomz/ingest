@@ -2,8 +2,8 @@
 
 ## Project Purpose
 
-life-log-sync synchronizes personal telemetry data
-from Strava, Withings, and other sources.
+ingest collects, normalizes, and prepares personal data
+for AI-assisted self-review.
 
 The repository contains code only.
 
@@ -15,7 +15,7 @@ Code:
 
 Telemetry:
 
-- ${XDG_DATA_HOME}/life-log-sync
+- ${XDG_DATA_HOME}/ingest
 
 Narrative:
 
