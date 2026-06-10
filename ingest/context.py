@@ -34,6 +34,15 @@ class RecoveryMetrics:
     suggested_next_day: list[str]
 
 
+@dataclass(frozen=True)
+class ActivityMetrics:
+    label: str
+    score: float | None
+    avg_7d: float | None
+    avg_30d: float | None
+    trend: str
+
+
 def generate_daily_context(config: AppConfig, target_date: date | None = None) -> Path:
     target = target_date or date.today()
     state = build_daily_state(config, target)
@@ -202,11 +211,6 @@ def _render_daily_state(state: DailyState) -> str:
         for activity in primary_today_activities
         if _is_walking_activity(activity)
     )
-    swimming_distance_km = sum(
-        activity.distance_km or 0.0
-        for activity in primary_today_activities
-        if activity.activity_type == "swim"
-    )
     swimming_duration_min = sum(
         activity.duration_min
         for activity in primary_today_activities
@@ -218,7 +222,13 @@ def _render_daily_state(state: DailyState) -> str:
         if activity.activity_type == "strength"
     ]
     strength_duration_min = sum(activity.duration_min for activity in strength_activities)
-    activity_level = _activity_level(total_distance_km, total_duration_min, len(primary_today_activities))
+    activity_metrics = _activity_metrics(
+        primary_today_activities,
+        historical_normalized_activities,
+        target_date,
+        total_distance_km=total_distance_km,
+        total_duration_min=total_duration_min,
+    )
     recovery_metrics = _recovery_metrics(
         primary_today_activities,
         state.hevy_sets,
@@ -234,7 +244,9 @@ def _render_daily_state(state: DailyState) -> str:
         "",
         "## Summary",
         "",
-        f"- Activity level: {activity_level}",
+        f"- Activity level: {activity_metrics.label}",
+        f"- Activity score: {_format_activity_score(activity_metrics.score)}",
+        f"- Activity trend: {activity_metrics.trend}",
         f"- Recovery compatibility: {recovery_metrics.compatibility}",
         f"- Withings steps: {withings_steps_text}",
     ]
@@ -250,8 +262,8 @@ def _render_daily_state(state: DailyState) -> str:
         ]
     )
 
-    if swimming_distance_km > 0 or swimming_duration_min > 0:
-        lines.append(f"- Swimming: {swimming_distance_km:.2f} km / {swimming_duration_min:.0f} min")
+    if swimming_duration_min > 0:
+        lines.append(f"- Swimming: {swimming_duration_min:.0f} min")
     if strength_activities:
         lines.append(f"- Strength: {len(strength_activities)} workouts / {strength_duration_min:.0f} min")
 
@@ -270,6 +282,8 @@ def _render_daily_state(state: DailyState) -> str:
             "",
             "## Trends",
             "",
+            f"- 7-day avg Activity score: {_format_average_activity_score(activity_metrics.avg_7d)}",
+            f"- 30-day avg Activity score: {_format_average_activity_score(activity_metrics.avg_30d)}",
         ]
     )
     if walking_distance_km > 0 or walking_duration_min > 0:
@@ -293,11 +307,10 @@ def _render_daily_state(state: DailyState) -> str:
             "",
             _ai_handoff(
                 activities=primary_today_activities,
-                activity_level=activity_level,
+                activity_metrics=activity_metrics,
                 total_duration_min=total_duration_min,
                 withings_steps_text=withings_steps_text,
                 walking_distance_km=walking_distance_km,
-                swimming_distance_km=swimming_distance_km,
                 swimming_duration_min=swimming_duration_min,
                 strength_count=len(strength_activities),
                 strength_duration_min=strength_duration_min,
@@ -332,6 +345,85 @@ def _activity_level(total_distance_km: float, total_duration_min: float, activit
     if total_distance_km <= 12 and total_duration_min <= 120:
         return "Moderate"
     return "High"
+
+
+def _activity_metrics(
+    activities: list[NormalizedActivity],
+    historical_activities: list[NormalizedActivity],
+    target_date: date,
+    *,
+    total_distance_km: float,
+    total_duration_min: float,
+) -> ActivityMetrics:
+    current_7d = _average_daily_activity_score(historical_activities, target_date, days=7)
+    previous_7d = _average_daily_activity_score(historical_activities, target_date - _date_delta(7), days=7)
+    avg_30d = _average_daily_activity_score(historical_activities, target_date, days=30)
+    return ActivityMetrics(
+        label=_activity_level(total_distance_km, total_duration_min, len(activities)),
+        score=_activity_score_for_totals(total_distance_km, total_duration_min, len(activities)),
+        avg_7d=current_7d,
+        avg_30d=avg_30d,
+        trend=_activity_score_trend(current_7d, previous_7d),
+    )
+
+
+def _activity_score_for_totals(
+    total_non_swim_distance_km: float,
+    total_duration_min: float,
+    activity_count: int,
+) -> float | None:
+    if activity_count == 0:
+        return None
+    return total_non_swim_distance_km + (total_duration_min / 12)
+
+
+def _average_daily_activity_score(
+    activities: list[NormalizedActivity],
+    end_date: date,
+    *,
+    days: int,
+) -> float | None:
+    start_date = end_date - _date_delta(days - 1)
+    activities_in_window = [
+        activity
+        for activity in activities
+        if (activity_date := _activity_date(activity.start_time)) is not None
+        and start_date <= activity_date <= end_date
+    ]
+    if not activities_in_window:
+        return None
+
+    total_non_swim_distance_km = sum(
+        activity.distance_km or 0.0
+        for activity in activities_in_window
+        if activity.activity_type != "swim"
+    )
+    total_duration_min = sum(activity.duration_min for activity in activities_in_window)
+    return (total_non_swim_distance_km + (total_duration_min / 12)) / days
+
+
+def _format_activity_score(value: float | None) -> str:
+    if value is None:
+        return "unavailable"
+    return f"{value:.1f}"
+
+
+def _format_average_activity_score(value: float | None) -> str:
+    if value is None:
+        return "Unknown"
+    return f"{value:.1f}/day"
+
+
+def _activity_score_trend(current_7d: float | None, previous_7d: float | None) -> str:
+    if current_7d is None or previous_7d is None:
+        return "Unknown"
+
+    difference = current_7d - previous_7d
+    if difference <= -1:
+        return "Decreasing"
+    if difference >= 1:
+        return "Increasing"
+    return "Stable"
 
 
 def _withings_step_count(activity_summaries: list[dict[str, str]]) -> int | None:
@@ -747,11 +839,10 @@ def _date_delta(days: int) -> timedelta:
 def _ai_handoff(
     *,
     activities: list[NormalizedActivity],
-    activity_level: str,
+    activity_metrics: ActivityMetrics,
     total_duration_min: float,
     withings_steps_text: str,
     walking_distance_km: float,
-    swimming_distance_km: float,
     swimming_duration_min: float,
     strength_count: int,
     strength_duration_min: float,
@@ -768,12 +859,16 @@ def _ai_handoff(
             else ""
         )
         activity_sentence = (
-            f"{activity_level} activity day with {len(activities)} primary activities"
+            f"{activity_metrics.label} activity day with {len(activities)} primary activities"
             f"{walking_part}, {total_duration_min:.0f} min moving time, "
             f"and {withings_steps_text} Withings steps."
         )
+    score_sentence = (
+        f" Activity score is {_format_activity_score(activity_metrics.score)}; "
+        f"activity trend is {activity_metrics.trend}."
+    )
     swimming_sentence = (
-        f" Swimming included {swimming_distance_km:.2f} km and {swimming_duration_min:.0f} min."
+        f" Swimming included {swimming_duration_min:.0f} min."
         if swimming_duration_min > 0
         else ""
     )
@@ -788,7 +883,7 @@ def _ai_handoff(
         f"load score is {recovery_metrics.load_score:.1f}."
     )
     return (
-        f"{activity_sentence}{swimming_sentence}{strength_sentence}{recovery_sentence} "
+        f"{activity_sentence}{score_sentence}{swimming_sentence}{strength_sentence}{recovery_sentence} "
         f"{_walking_handoff_sentence(walking_distance_km, walking_metrics)}"
         f"Current weight is {weight_metrics['current_weight']}; "
         f"weight trend is {weight_metrics['trend']}."
@@ -844,7 +939,7 @@ def _render_activity_sections(activities: list[NormalizedActivity], hevy_sets: l
 
     if swimming_activities:
         lines.extend(["### Swimming", ""])
-        lines.extend(_render_distance_activities(swimming_activities))
+        lines.extend(_render_duration_activities(swimming_activities))
         lines.append("")
 
     if workout_activities:
@@ -869,6 +964,18 @@ def _render_distance_activities(activities: list[NormalizedActivity]) -> list[st
             f"{_display_activity_name(activity)} "
             f"({_format_distance(activity.distance_km)}, "
             f"{activity.duration_min:.0f} min)"
+        )
+    return lines
+
+
+def _render_duration_activities(activities: list[NormalizedActivity]) -> list[str]:
+    lines: list[str] = []
+    for activity in activities:
+        lines.append(
+            "- "
+            f"{activity.raw_type or 'Unknown'}: "
+            f"{_display_activity_name(activity)} "
+            f"({activity.duration_min:.0f} min)"
         )
     return lines
 
