@@ -65,7 +65,7 @@ class EstimatedDeficitMetrics:
 WALK_STEPS_PER_KM = 1300
 RUN_STEPS_PER_KM = 1200
 WALK_MIN_PER_KM = 12
-DERIVED_BODY_METRICS_LABEL = "Derived metrics"
+DERIVED_BODY_METRIC_LABELS = {"BMI", "BMR"}
 
 
 def generate_daily_context(config: AppConfig, target_date: date | None = None) -> Path:
@@ -260,6 +260,10 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
             recovery_metrics=recovery_metrics,
             walking_metrics=walking_metrics,
             weight_metrics=weight_metrics,
+            bmi=_bmi_value(
+                _latest_measures_by_type(state.measures).get("weight"),
+                _height_measure(_latest_measures_by_type(state.measures)),
+            ),
             bmr=_bmr_value(_latest_measures_by_type(state.measures).get("fat_free_mass")),
             estimated_deficit=_format_average_estimated_deficit(estimated_deficit_metrics.today)
             if estimated_deficit_metrics is not None
@@ -557,6 +561,10 @@ def _render_daily_state(state: DailyState) -> str:
                 recovery_metrics=recovery_metrics,
                 walking_metrics=walking_metrics,
                 weight_metrics=weight_metrics,
+                bmi=_bmi_value(
+                    _latest_measures_by_type(measures).get("weight"),
+                    _height_measure(_latest_measures_by_type(measures)),
+                ),
                 bmr=_bmr_value(_latest_measures_by_type(measures).get("fat_free_mass")),
                 estimated_deficit=_format_average_estimated_deficit(estimated_deficit_metrics.today)
                 if estimated_deficit_metrics is not None
@@ -887,18 +895,22 @@ def _weight_value(value: str) -> float | None:
 
 def _body_rows(measures: list[dict[str, str]]) -> list[str]:
     rows = []
+    in_derived_metrics = False
     for label, value in _body_kv_rows(measures):
-        if label == DERIVED_BODY_METRICS_LABEL:
+        if label in DERIVED_BODY_METRIC_LABELS and not in_derived_metrics:
             rows.append("| ----- |  |")
+            in_derived_metrics = True
         rows.append(f"| {label} | {value} |")
     return rows
 
 
 def _terminal_body_kv_rows(measures: list[dict[str, str]]) -> list[tuple[str, str]]:
     terminal_rows = []
+    in_derived_metrics = False
     for label, value in _body_kv_rows(measures):
-        if label == DERIVED_BODY_METRICS_LABEL:
+        if label in DERIVED_BODY_METRIC_LABELS and not in_derived_metrics:
             terminal_rows.append(("-----", ""))
+            in_derived_metrics = True
         terminal_rows.append((label, value.replace(" · ", " / ")))
     return terminal_rows
 
@@ -916,10 +928,9 @@ def _body_kv_rows(measures: list[dict[str, str]]) -> list[tuple[str, str]]:
         "hydration",
         "fat_free_mass",
         "bone_mass",
-        "bmi",
-        "body_mass_index",
+        "height",
+        "type_4",
     }
-    bmi = latest_by_type.get("bmi") or latest_by_type.get("body_mass_index")
     rows = [
         ("Weight", _measure_value(latest_by_type.get("weight"))),
         ("Body fat", _body_fat_value(latest_by_type)),
@@ -927,14 +938,15 @@ def _body_kv_rows(measures: list[dict[str, str]]) -> list[tuple[str, str]]:
         ("Hydration", _measure_value(latest_by_type.get("hydration"))),
         ("Fat-free mass", _measure_value(latest_by_type.get("fat_free_mass"))),
         ("Bone mass", _measure_value(latest_by_type.get("bone_mass"))),
-        ("BMI", _measure_value(bmi)),
     ]
     for type_name, measure in latest_by_type.items():
         if type_name not in main_types:
             rows.append((type_name or "measurement", _measure_value(measure)))
+    bmi = _bmi_value(latest_by_type.get("weight"), _height_measure(latest_by_type))
     bmr = _bmr_value(latest_by_type.get("fat_free_mass"))
+    if bmi is not None:
+        rows.append(("BMI", bmi))
     if bmr is not None:
-        rows.append((DERIVED_BODY_METRICS_LABEL, ""))
         rows.append(("BMR", bmr))
     return rows
 
@@ -962,6 +974,20 @@ def _bmr_value(fat_free_mass: dict[str, str] | None) -> str | None:
     if fat_free_mass_kg is None:
         return None
     return f"{int((370 + (21.6 * fat_free_mass_kg)) + 0.5)} kcal/day"
+
+
+def _bmi_value(weight: dict[str, str] | None, height: dict[str, str] | None) -> str | None:
+    if weight is None or height is None:
+        return None
+    weight_kg = _float_value(weight.get("value", ""))
+    height_m = _float_value(height.get("value", ""))
+    if weight_kg is None or height_m is None or height_m <= 0:
+        return None
+    return f"{weight_kg / (height_m * height_m):.2f}"
+
+
+def _height_measure(measures: dict[str, dict[str, str]]) -> dict[str, str] | None:
+    return measures.get("height") or measures.get("type_4")
 
 
 def _body_fat_value(measures: dict[str, dict[str, str]]) -> str:
@@ -1699,6 +1725,7 @@ def _ai_handoff(
     recovery_metrics: RecoveryMetrics,
     walking_metrics: dict[str, str],
     weight_metrics: dict[str, str],
+    bmi: str | None,
     bmr: str | None,
     estimated_deficit: str | None,
 ) -> str:
@@ -1738,6 +1765,8 @@ def _ai_handoff(
         f"Current weight is {weight_metrics['current_weight']}.",
         f"Weight trend is {weight_metrics['trend']}.",
     ]
+    if bmi is not None:
+        body_sentences.append(f"BMI is {bmi}.")
     if bmr is not None:
         body_sentences.append(f"BMR is {bmr}.")
     if estimated_deficit is not None:

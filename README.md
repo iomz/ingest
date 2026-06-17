@@ -31,6 +31,12 @@ The Body section keeps measured body composition values first, then a visual
 separator and explicit derived metrics rows so downstream LLM consumers can use
 computed values without re-deriving them.
 
+BMI uses current weight and height:
+
+```text
+BMI = weight_kg / (height_m * height_m)
+```
+
 BMR uses the Katch-McArdle equation from fat-free mass:
 
 ```text

@@ -19,6 +19,7 @@ WITHINGS_SCOPES = "user.metrics,user.activity"
 
 BODY_MEASURE_TYPES = {
     1: ("weight", "kg"),
+    4: ("height", "m"),
     5: ("fat_free_mass", "kg"),
     6: ("fat_ratio", "%"),
     8: ("fat_mass_weight", "kg"),

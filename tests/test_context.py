@@ -129,16 +129,18 @@ class ContextTest(unittest.TestCase):
             [],
             [
                 body_measure(date(2026, 5, 29), "weight", 99.00),
+                body_measure(date(2026, 5, 29), "height", 1.80, "m"),
                 body_measure(date(2026, 5, 29), "fat_free_mass", 68.60),
-                body_measure(date(2026, 5, 29), "bmi", 30.61, ""),
             ],
         )
 
-        self.assertIn("| BMI | 30.61 |", content)
+        self.assertNotIn("| height |", content)
         self.assertIn("| Fat-free mass | 68.60 kg |", content)
-        self.assertIn("| ----- |  |\n| Derived metrics |  |\n| BMR | 1852 kcal/day |", content)
+        self.assertIn("| ----- |  |\n| BMI | 30.56 |\n| BMR | 1852 kcal/day |", content)
+        self.assertNotIn("| Derived metrics |", content)
+        self.assertIn("| BMI | 30.56 |", content)
         self.assertIn("| BMR | 1852 kcal/day |", content)
-        self.assertIn("Current weight is 99.00 kg. Weight trend is Unknown. BMR is 1852 kcal/day.", content)
+        self.assertIn("Current weight is 99.00 kg. Weight trend is Unknown. BMI is 30.56. BMR is 1852 kcal/day.", content)
 
     def test_rounds_bmr_to_nearest_integer(self) -> None:
         content = render_daily_context(
