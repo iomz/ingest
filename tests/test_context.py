@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from rich.console import Console
@@ -17,6 +17,26 @@ from ingest.context import (
     render_daily_terminal_context,
     withings_activities_for_date,
 )
+
+
+def weight_measure(measured_date: date, value: float, *, time: str = "06:00:00") -> dict[str, str]:
+    return {
+        "date": measured_date.isoformat(),
+        "datetime_local": f"{measured_date.isoformat()}T{time}",
+        "type_name": "weight",
+        "value": f"{value:.2f}",
+        "unit": "kg",
+    }
+
+
+def body_measure(measured_date: date, type_name: str, value: float, unit: str = "kg") -> dict[str, str]:
+    return {
+        "date": measured_date.isoformat(),
+        "datetime_local": f"{measured_date.isoformat()}T06:00:00",
+        "type_name": type_name,
+        "value": f"{value:.2f}",
+        "unit": unit,
+    }
 
 
 class ContextTest(unittest.TestCase):
@@ -99,8 +119,44 @@ class ContextTest(unittest.TestCase):
         self.assertIn("## Body", content)
         self.assertIn("| Weight | 70.50 kg |", content)
         self.assertIn("| Body fat | 18.42 % · 12.99 kg fat mass |", content)
+        self.assertNotIn("| BMR |", content)
         self.assertNotIn("Assumptions:", content)
         self.assertNotIn("Total swimming distance: 0.00 km", content)
+
+    def test_renders_bmr_from_fat_free_mass(self) -> None:
+        content = render_daily_context(
+            date(2026, 5, 29),
+            [],
+            [
+                body_measure(date(2026, 5, 29), "weight", 99.00),
+                body_measure(date(2026, 5, 29), "fat_free_mass", 68.60),
+                body_measure(date(2026, 5, 29), "bmi", 30.61, ""),
+            ],
+        )
+
+        self.assertIn("| BMI | 30.61 |", content)
+        self.assertIn("| Fat-free mass | 68.60 kg |", content)
+        self.assertIn("| ----- |  |\n| Derived metrics |  |\n| BMR | 1852 kcal/day |", content)
+        self.assertIn("| BMR | 1852 kcal/day |", content)
+        self.assertIn("Current weight is 99.00 kg. Weight trend is Unknown. BMR is 1852 kcal/day.", content)
+
+    def test_rounds_bmr_to_nearest_integer(self) -> None:
+        content = render_daily_context(
+            date(2026, 5, 29),
+            [],
+            [body_measure(date(2026, 5, 29), "fat_free_mass", 68.57)],
+        )
+
+        self.assertIn("| BMR | 1851 kcal/day |", content)
+
+    def test_omits_bmr_without_fat_free_mass(self) -> None:
+        content = render_daily_context(
+            date(2026, 5, 29),
+            [],
+            [body_measure(date(2026, 5, 29), "weight", 99.00)],
+        )
+
+        self.assertNotIn("| BMR |", content)
 
     def test_renders_light_walking_derived_metrics(self) -> None:
         content = render_daily_context(
@@ -220,6 +276,61 @@ class ContextTest(unittest.TestCase):
 
         self.assertIn("| Weight | 71.00 kg | 71.00 kg | 71.50 kg | Below 30-day average |", content)
         self.assertIn("| Body | 71.00 kg · decreasing |", content)
+
+    def test_renders_positive_estimated_deficit_for_weight_loss(self) -> None:
+        historical_measures = [
+            weight_measure(date(2026, 5, 1), 70.00),
+            weight_measure(date(2026, 5, 31), 69.00),
+        ]
+
+        content = render_daily_context(date(2026, 5, 31), [], historical_measures, historical_measures)
+
+        self.assertIn("| Estimated deficit | 257 kcal/day | 257 kcal/day | 257 kcal/day | Stable |", content)
+
+    def test_renders_negative_estimated_deficit_for_weight_gain(self) -> None:
+        historical_measures = [
+            weight_measure(date(2026, 5, 1), 69.00),
+            weight_measure(date(2026, 5, 31), 70.00),
+        ]
+
+        content = render_daily_context(date(2026, 5, 31), [], historical_measures, historical_measures)
+
+        self.assertIn("| Estimated deficit | -257 kcal/day | -257 kcal/day | -257 kcal/day | Stable |", content)
+
+    def test_renders_zero_estimated_deficit_for_flat_weight(self) -> None:
+        historical_measures = [
+            weight_measure(date(2026, 5, 1), 70.00),
+            weight_measure(date(2026, 5, 31), 70.00),
+        ]
+
+        content = render_daily_context(date(2026, 5, 31), [], historical_measures, historical_measures)
+
+        self.assertIn("| Estimated deficit | 0 kcal/day | 0 kcal/day | 0 kcal/day | Stable |", content)
+
+    def test_omits_estimated_deficit_with_insufficient_weight_history(self) -> None:
+        historical_measures = [
+            weight_measure(date(2026, 5, 2), 70.00),
+            weight_measure(date(2026, 5, 31), 69.00),
+        ]
+
+        content = render_daily_context(date(2026, 5, 31), [], historical_measures, historical_measures)
+
+        self.assertNotIn("Estimated deficit", content)
+
+    def test_renders_estimated_deficit_rolling_averages(self) -> None:
+        report_date = date(2026, 6, 30)
+        historical_measures = []
+        for offset in range(30):
+            current_date = date(2026, 6, 1) + timedelta(days=offset)
+            deficit = (offset + 1) * 10
+            weight_change = (deficit * 30) / 7700
+            historical_measures.append(weight_measure(current_date - timedelta(days=30), 80.00 + weight_change))
+            historical_measures.append(weight_measure(current_date, 80.00))
+
+        content = render_daily_context(report_date, [], historical_measures, historical_measures)
+
+        self.assertIn("| Estimated deficit | 300 kcal/day | 270 kcal/day | 155 kcal/day | Above 30-day average |", content)
+        self.assertIn("Estimated energy deficit is 300 kcal/day.", content)
 
     def test_context_counts_withings_activities(self) -> None:
         content = render_daily_context(

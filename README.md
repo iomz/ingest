@@ -24,6 +24,26 @@ Current code fetches Withings data, imports Hevy workout exports, writes local
 records, builds a `DailyState`, and renders AI-readable daily context. Future
 OpenAI API calls and Brain vault writes belong after rendered context.
 
+## Derived Metrics
+
+Derived metrics are calculated during report generation and are not persisted.
+The Body section keeps measured body composition values first, then a visual
+separator and explicit derived metrics rows so downstream LLM consumers can use
+computed values without re-deriving them.
+
+BMR uses the Katch-McArdle equation from fat-free mass:
+
+```text
+BMR = 370 + (21.6 * fat_free_mass_kg)
+```
+
+Estimated deficit uses observed weight change over the previous 30 days:
+
+```text
+weight_change_kg = weight_30_days_ago - current_weight
+estimated_deficit_kcal_per_day = (weight_change_kg * 7700) / 30
+```
+
 ## Commands
 
 Primary daily workflow:

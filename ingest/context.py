@@ -55,9 +55,17 @@ class ActivityEffortTotals:
     activity_count: int
 
 
+@dataclass(frozen=True)
+class EstimatedDeficitMetrics:
+    today: float
+    avg_7d: float | None
+    avg_30d: float | None
+
+
 WALK_STEPS_PER_KM = 1300
 RUN_STEPS_PER_KM = 1200
 WALK_MIN_PER_KM = 12
+DERIVED_BODY_METRICS_LABEL = "Derived metrics"
 
 
 def generate_daily_context(config: AppConfig, target_date: date | None = None) -> Path:
@@ -113,6 +121,7 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         swimming_duration_min=swimming_duration_min,
     )
     weight_metrics = _weight_metrics(state.historical_measures, target_date)
+    estimated_deficit_metrics = _estimated_deficit_metrics(state.historical_measures, target_date)
     walking_metrics = _walking_metrics(state.historical_activities, target_date)
     sources = _activity_sources(activities)
 
@@ -200,6 +209,20 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
             )
         ),
     )
+    if estimated_deficit_metrics is not None:
+        trends.add_row(
+            _styled_terminal_value("  Estimated deficit", label="Metric"),
+            _styled_terminal_value(_format_estimated_deficit(estimated_deficit_metrics.today)),
+            _styled_terminal_value(_format_average_estimated_deficit(estimated_deficit_metrics.avg_7d)),
+            _styled_terminal_value(_format_average_estimated_deficit(estimated_deficit_metrics.avg_30d)),
+            _styled_terminal_value(
+                _terminal_trend_direction(
+                    estimated_deficit_metrics.today,
+                    estimated_deficit_metrics.avg_7d,
+                    estimated_deficit_metrics.avg_30d,
+                )
+            ),
+        )
     console.print(trends)
 
     body_rows = _terminal_body_kv_rows(state.measures)
@@ -237,6 +260,10 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
             recovery_metrics=recovery_metrics,
             walking_metrics=walking_metrics,
             weight_metrics=weight_metrics,
+            bmr=_bmr_value(_latest_measures_by_type(state.measures).get("fat_free_mass")),
+            estimated_deficit=_format_average_estimated_deficit(estimated_deficit_metrics.today)
+            if estimated_deficit_metrics is not None
+            else None,
         ),
     )
 
@@ -428,6 +455,7 @@ def _render_daily_state(state: DailyState) -> str:
         swimming_duration_min=swimming_duration_min,
     )
     weight_metrics = _weight_metrics(state.historical_measures, target_date)
+    estimated_deficit_metrics = _estimated_deficit_metrics(state.historical_measures, target_date)
     walking_metrics = _walking_metrics(historical_normalized_activities, target_date)
     sources = _activity_sources(primary_today_activities)
     ride_distance_km = sum(
@@ -485,6 +513,19 @@ def _render_daily_state(state: DailyState) -> str:
             f"{weight_metrics['avg_30d']} | "
             f"{_trend_direction(weight_metrics['trend'], _weight_value(weight_metrics['current_weight']), _weight_value(weight_metrics['avg_30d']))} |"
         ),
+        *(
+            [
+                (
+                    "| Estimated deficit | "
+                    f"{_format_estimated_deficit(estimated_deficit_metrics.today)} | "
+                    f"{_format_average_estimated_deficit(estimated_deficit_metrics.avg_7d)} | "
+                    f"{_format_average_estimated_deficit(estimated_deficit_metrics.avg_30d)} | "
+                    f"{_trend_direction('Unknown', estimated_deficit_metrics.today, estimated_deficit_metrics.avg_30d)} |"
+                )
+            ]
+            if estimated_deficit_metrics is not None
+            else []
+        ),
         "",
     ]
 
@@ -516,6 +557,10 @@ def _render_daily_state(state: DailyState) -> str:
                 recovery_metrics=recovery_metrics,
                 walking_metrics=walking_metrics,
                 weight_metrics=weight_metrics,
+                bmr=_bmr_value(_latest_measures_by_type(measures).get("fat_free_mass")),
+                estimated_deficit=_format_average_estimated_deficit(estimated_deficit_metrics.today)
+                if estimated_deficit_metrics is not None
+                else None,
             ),
             "",
         ]
@@ -841,11 +886,21 @@ def _weight_value(value: str) -> float | None:
 
 
 def _body_rows(measures: list[dict[str, str]]) -> list[str]:
-    return [f"| {label} | {value} |" for label, value in _body_kv_rows(measures)]
+    rows = []
+    for label, value in _body_kv_rows(measures):
+        if label == DERIVED_BODY_METRICS_LABEL:
+            rows.append("| ----- |  |")
+        rows.append(f"| {label} | {value} |")
+    return rows
 
 
 def _terminal_body_kv_rows(measures: list[dict[str, str]]) -> list[tuple[str, str]]:
-    return [(label, value.replace(" · ", " / ")) for label, value in _body_kv_rows(measures)]
+    terminal_rows = []
+    for label, value in _body_kv_rows(measures):
+        if label == DERIVED_BODY_METRICS_LABEL:
+            terminal_rows.append(("-----", ""))
+        terminal_rows.append((label, value.replace(" · ", " / ")))
+    return terminal_rows
 
 
 def _body_kv_rows(measures: list[dict[str, str]]) -> list[tuple[str, str]]:
@@ -861,7 +916,10 @@ def _body_kv_rows(measures: list[dict[str, str]]) -> list[tuple[str, str]]:
         "hydration",
         "fat_free_mass",
         "bone_mass",
+        "bmi",
+        "body_mass_index",
     }
+    bmi = latest_by_type.get("bmi") or latest_by_type.get("body_mass_index")
     rows = [
         ("Weight", _measure_value(latest_by_type.get("weight"))),
         ("Body fat", _body_fat_value(latest_by_type)),
@@ -869,10 +927,15 @@ def _body_kv_rows(measures: list[dict[str, str]]) -> list[tuple[str, str]]:
         ("Hydration", _measure_value(latest_by_type.get("hydration"))),
         ("Fat-free mass", _measure_value(latest_by_type.get("fat_free_mass"))),
         ("Bone mass", _measure_value(latest_by_type.get("bone_mass"))),
+        ("BMI", _measure_value(bmi)),
     ]
     for type_name, measure in latest_by_type.items():
         if type_name not in main_types:
             rows.append((type_name or "measurement", _measure_value(measure)))
+    bmr = _bmr_value(latest_by_type.get("fat_free_mass"))
+    if bmr is not None:
+        rows.append((DERIVED_BODY_METRICS_LABEL, ""))
+        rows.append(("BMR", bmr))
     return rows
 
 
@@ -890,6 +953,15 @@ def _measure_value(measure: dict[str, str] | None) -> str:
     if measure is None:
         return "Unknown"
     return f"{measure.get('value') or '0.00'} {measure.get('unit') or ''}".rstrip()
+
+
+def _bmr_value(fat_free_mass: dict[str, str] | None) -> str | None:
+    if fat_free_mass is None:
+        return None
+    fat_free_mass_kg = _float_value(fat_free_mass.get("value", ""))
+    if fat_free_mass_kg is None:
+        return None
+    return f"{int((370 + (21.6 * fat_free_mass_kg)) + 0.5)} kcal/day"
 
 
 def _body_fat_value(measures: dict[str, dict[str, str]]) -> str:
@@ -1406,6 +1478,86 @@ def _weight_metrics(measures: list[dict[str, str]], target_date: date) -> dict[s
     }
 
 
+def _estimated_deficit_metrics(
+    measures: list[dict[str, str]],
+    target_date: date,
+) -> EstimatedDeficitMetrics | None:
+    weights = _weight_measurements(measures, target_date)
+    today = _daily_estimated_deficit(weights, target_date)
+    if today is None:
+        return None
+    return EstimatedDeficitMetrics(
+        today=today,
+        avg_7d=_average_estimated_deficit(weights, target_date, days=7),
+        avg_30d=_average_estimated_deficit(weights, target_date, days=30),
+    )
+
+
+def _weight_measurements(measures: list[dict[str, str]], target_date: date) -> list[dict[str, str]]:
+    return [
+        measure
+        for measure in measures
+        if measure.get("type_name", "").lower() == "weight"
+        and (measure_date := _measure_date(measure)) is not None
+        and measure_date <= target_date
+        and _float_value(measure.get("value", "")) is not None
+    ]
+
+
+def _daily_estimated_deficit(weights: list[dict[str, str]], target_date: date) -> float | None:
+    current_weight = _latest_weight_for_date(weights, target_date)
+    if current_weight is None:
+        return None
+
+    comparison_weight = _weight_closest_to_history_anchor(weights, target_date - _date_delta(30))
+    if comparison_weight is None:
+        return None
+
+    current_value = _float_value(current_weight.get("value", ""))
+    comparison_value = _float_value(comparison_weight.get("value", ""))
+    if current_value is None or comparison_value is None:
+        return None
+
+    weight_change_kg = comparison_value - current_value
+    return (weight_change_kg * 7700) / 30
+
+
+def _latest_weight_for_date(weights: list[dict[str, str]], target_date: date) -> dict[str, str] | None:
+    weights_for_date = [measure for measure in weights if _measure_date(measure) == target_date]
+    if not weights_for_date:
+        return None
+    return max(weights_for_date, key=lambda measure: measure.get("datetime_local", ""))
+
+
+def _weight_closest_to_history_anchor(weights: list[dict[str, str]], anchor_date: date) -> dict[str, str] | None:
+    candidates = [
+        measure
+        for measure in weights
+        if (measure_date := _measure_date(measure)) is not None
+        and measure_date <= anchor_date
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda measure: (
+            _measure_date(measure) or date.min,
+            measure.get("datetime_local", ""),
+        ),
+    )
+
+
+def _average_estimated_deficit(weights: list[dict[str, str]], end_date: date, *, days: int) -> float | None:
+    values = [
+        value
+        for day_offset in range(days)
+        if (value := _daily_estimated_deficit(weights, end_date - _date_delta(day_offset))) is not None
+    ]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
 def _walking_metrics(activities: list[NormalizedActivity], target_date: date) -> dict[str, str]:
     current_7d = _average_daily_walking_distance(activities, target_date, days=7)
     previous_7d = _average_daily_walking_distance(activities, target_date - _date_delta(7), days=7)
@@ -1484,6 +1636,19 @@ def _format_average_weight(value: float | None) -> str:
     return f"{value:.2f} kg"
 
 
+def _format_estimated_deficit(value: float) -> str:
+    rounded = round(value)
+    if rounded == 0:
+        return "0 kcal/day"
+    return f"{rounded} kcal/day"
+
+
+def _format_average_estimated_deficit(value: float | None) -> str:
+    if value is None:
+        return "Unknown"
+    return _format_estimated_deficit(value)
+
+
 def _weight_trend(current_7d: float | None, previous_7d: float | None) -> str:
     if current_7d is None or previous_7d is None:
         return "Unknown"
@@ -1534,6 +1699,8 @@ def _ai_handoff(
     recovery_metrics: RecoveryMetrics,
     walking_metrics: dict[str, str],
     weight_metrics: dict[str, str],
+    bmr: str | None,
+    estimated_deficit: str | None,
 ) -> str:
     if not activities:
         activity_sentence = "No primary activities found for this date."
@@ -1567,11 +1734,18 @@ def _ai_handoff(
         f"fatigue risk is {recovery_metrics.fatigue_risk}; "
         f"load score is {recovery_metrics.load_score:.1f}."
     )
+    body_sentences = [
+        f"Current weight is {weight_metrics['current_weight']}.",
+        f"Weight trend is {weight_metrics['trend']}.",
+    ]
+    if bmr is not None:
+        body_sentences.append(f"BMR is {bmr}.")
+    if estimated_deficit is not None:
+        body_sentences.append(f"Estimated energy deficit is {estimated_deficit}.")
     return (
         f"{activity_sentence}{score_sentence}{swimming_sentence}{strength_sentence}{recovery_sentence} "
         f"{_walking_handoff_sentence(walking_distance_km, walking_metrics)}"
-        f"Current weight is {weight_metrics['current_weight']}; "
-        f"weight trend is {weight_metrics['trend']}."
+        f"{' '.join(body_sentences)}"
     )
 
 
