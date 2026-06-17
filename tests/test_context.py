@@ -325,6 +325,20 @@ class ContextTest(unittest.TestCase):
 
         self.assertNotIn("Estimated deficit", content)
 
+    def test_ignores_invalid_weight_when_estimating_deficit(self) -> None:
+        historical_measures = [
+            weight_measure(date(2026, 5, 1), 70.00),
+            weight_measure(date(2026, 5, 31), 69.00),
+            {
+                **weight_measure(date(2026, 5, 31), 0.00, time="07:00:00"),
+                "value": "invalid",
+            },
+        ]
+
+        content = render_daily_context(date(2026, 5, 31), [], historical_measures, historical_measures)
+
+        self.assertIn("| Estimated deficit | 257 kcal/day | 257 kcal/day | 257 kcal/day | Stable |", content)
+
     def test_renders_estimated_deficit_rolling_averages(self) -> None:
         report_date = date(2026, 6, 30)
         historical_measures = []

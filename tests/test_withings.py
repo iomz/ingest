@@ -556,8 +556,10 @@ access_token = "access"
             body,
             {"measuregrps": [{"grpid": 2, "date": 1780041600, "measures": [{"type": 4, "value": 180, "unit": -2}]}]},
         )
-        self.assertEqual(session.calls[0]["data"]["meastypes"], "4")
-        self.assertLess(session.calls[0]["data"]["startdate"], session.calls[0]["data"]["enddate"])
+        self.assertGreater(len(session.calls), 1)
+        for call in session.calls:
+            self.assertEqual(call["data"]["meastypes"], "4")
+            self.assertLessEqual(call["data"]["enddate"] - call["data"]["startdate"], 90 * 24 * 60 * 60)
 
     def test_sync_range_merges_latest_height_into_recent_measures(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

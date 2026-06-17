@@ -1556,7 +1556,7 @@ def _weight_measurements(measures: list[dict[str, str]], target_date: date) -> l
         if measure.get("type_name", "").lower() == "weight"
         and (measure_date := _measure_date(measure)) is not None
         and measure_date <= target_date
-        and _float_value(measure.get("value", "")) is not None
+        and _optional_float_value(measure.get("value", "")) is not None
     ]
 
 
@@ -1970,6 +1970,13 @@ def _float_value(value: str) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _optional_float_value(value: str) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _optional_int_value(value: str) -> int | None:

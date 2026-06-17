@@ -45,6 +45,9 @@ BMR = 370 + (21.6 * fat_free_mass_kg)
 
 Estimated deficit uses observed weight change over the previous 30 days:
 
+`weight_30_days_ago` means the latest weight measurement on or before the date
+30 days before the report date, not necessarily a measurement from that exact date.
+
 ```text
 weight_change_kg = weight_30_days_ago - current_weight
 estimated_deficit_kcal_per_day = (weight_change_kg * 7700) / 30

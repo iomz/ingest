@@ -242,6 +242,7 @@ def fetch_body_measures_windowed(
     *,
     start_date: date,
     end_date: date,
+    meastypes: str = BODY_MEASURE_TYPE_IDS,
 ) -> dict[str, Any]:
     if start_date > end_date:
         raise SystemExit("Withings start date must be on or before end date.")
@@ -250,7 +251,13 @@ def fetch_body_measures_windowed(
     window_start = start_date
     while window_start <= end_date:
         window_end = min(window_start + timedelta(days=BACKFILL_WINDOW_DAYS - 1), end_date)
-        body = fetch_body_measures(session, access_token, start_date=window_start, end_date=window_end)
+        body = fetch_body_measures(
+            session,
+            access_token,
+            start_date=window_start,
+            end_date=window_end,
+            meastypes=meastypes,
+        )
         window_groups = body.get("measuregrps", [])
         if not isinstance(window_groups, list):
             raise SystemExit("Withings measure response did not contain measuregrps.")
@@ -260,7 +267,7 @@ def fetch_body_measures_windowed(
 
 
 def fetch_latest_height(session: Any, access_token: str, *, end_date: date) -> dict[str, Any]:
-    body = fetch_body_measures(
+    body = fetch_body_measures_windowed(
         session,
         access_token,
         start_date=HEIGHT_LOOKBACK_START,
