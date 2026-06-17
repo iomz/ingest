@@ -29,6 +29,8 @@ BODY_MEASURE_TYPES = {
     91: ("pulse_wave_velocity", "m/s"),
 }
 BODY_MEASURE_TYPE_IDS = ",".join(str(measure_type) for measure_type in BODY_MEASURE_TYPES)
+HEIGHT_MEASURE_TYPE_ID = "4"
+HEIGHT_LOOKBACK_START = date(1970, 1, 1)
 
 MEASURE_FIELDS = [
     "grpid",
@@ -112,6 +114,7 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
     with requests.Session() as session:
         access_token = get_access_token(session, config)
         measures = fetch_body_measures_windowed(session, access_token, start_date=start_date, end_date=end_date)
+        height = fetch_latest_height(session, access_token, end_date=end_date)
         activity = fetch_activity_windowed(
             session,
             access_token,
@@ -125,6 +128,7 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
             end_date=end_date,
         )
 
+    measures = _with_latest_height(measures, height)
     written_paths = write_measures(config, measures, raw_name=raw_name, merge=True)
     activity_raw_name = raw_name.replace("body_measures", "activity")
     written_paths.extend(write_activity(config, activity, raw_name=activity_raw_name, merge=True))
@@ -212,6 +216,7 @@ def fetch_body_measures(
     *,
     start_date: date,
     end_date: date,
+    meastypes: str = BODY_MEASURE_TYPE_IDS,
 ) -> dict[str, Any]:
     try:
         response = session.post(
@@ -220,7 +225,7 @@ def fetch_body_measures(
             data={
                 "action": "getmeas",
                 "category": 1,
-                "meastypes": BODY_MEASURE_TYPE_IDS,
+                "meastypes": meastypes,
                 "startdate": _start_timestamp(start_date),
                 "enddate": _end_timestamp(end_date),
             },
@@ -252,6 +257,53 @@ def fetch_body_measures_windowed(
         measuregrps.extend(window_groups)
         window_start = window_end + timedelta(days=1)
     return {"measuregrps": measuregrps}
+
+
+def fetch_latest_height(session: Any, access_token: str, *, end_date: date) -> dict[str, Any]:
+    body = fetch_body_measures(
+        session,
+        access_token,
+        start_date=HEIGHT_LOOKBACK_START,
+        end_date=end_date,
+        meastypes=HEIGHT_MEASURE_TYPE_ID,
+    )
+    measuregrps = body.get("measuregrps", [])
+    if not isinstance(measuregrps, list):
+        raise SystemExit("Withings height response did not contain measuregrps.")
+    height_groups = [
+        group
+        for group in measuregrps
+        if any(_int_or_zero(measure.get("type")) == 4 for measure in group.get("measures", []))
+    ]
+    if not height_groups:
+        return {"measuregrps": []}
+    latest_group = max(
+        height_groups,
+        key=lambda group: (
+            _int_or_zero(group.get("date")),
+            _int_or_zero(group.get("grpid")),
+        ),
+    )
+    return {"measuregrps": [_height_only_group(latest_group)]}
+
+
+def _with_latest_height(measures: dict[str, Any], height: dict[str, Any]) -> dict[str, Any]:
+    measuregrps = measures.get("measuregrps", [])
+    height_groups = height.get("measuregrps", [])
+    if not isinstance(measuregrps, list):
+        raise SystemExit("Withings measure response did not contain measuregrps.")
+    if not isinstance(height_groups, list):
+        raise SystemExit("Withings height response did not contain measuregrps.")
+    return {"measuregrps": [*measuregrps, *height_groups]}
+
+
+def _height_only_group(group: dict[str, Any]) -> dict[str, Any]:
+    height_measures = [
+        measure
+        for measure in group.get("measures", [])
+        if _int_or_zero(measure.get("type")) == 4
+    ]
+    return {**group, "measures": height_measures}
 
 
 def fetch_workouts(

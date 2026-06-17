@@ -225,7 +225,7 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         )
     console.print(trends)
 
-    body_rows = _terminal_body_kv_rows(state.measures)
+    body_rows = _terminal_body_kv_rows(state.measures, state.historical_measures, target_date)
     if body_rows:
         _render_section_title(console, "Body")
         _render_kv_block(console, body_rows, indent=2)
@@ -262,7 +262,7 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
             weight_metrics=weight_metrics,
             bmi=_bmi_value(
                 _latest_measures_by_type(state.measures).get("weight"),
-                _height_measure(_latest_measures_by_type(state.measures)),
+                _latest_historical_height(state.historical_measures, target_date),
             ),
             bmr=_bmr_value(_latest_measures_by_type(state.measures).get("fat_free_mass")),
             estimated_deficit=_format_average_estimated_deficit(estimated_deficit_metrics.today)
@@ -467,7 +467,7 @@ def _render_daily_state(state: DailyState) -> str:
         for activity in primary_today_activities
         if activity.activity_type == "ride"
     )
-    body_rows = _body_rows(measures)
+    body_rows = _body_rows(measures, state.historical_measures, target_date)
 
     lines = [
         f"# Physical Context - {target_date.isoformat()}",
@@ -563,7 +563,7 @@ def _render_daily_state(state: DailyState) -> str:
                 weight_metrics=weight_metrics,
                 bmi=_bmi_value(
                     _latest_measures_by_type(measures).get("weight"),
-                    _height_measure(_latest_measures_by_type(measures)),
+                    _latest_historical_height(state.historical_measures, target_date),
                 ),
                 bmr=_bmr_value(_latest_measures_by_type(measures).get("fat_free_mass")),
                 estimated_deficit=_format_average_estimated_deficit(estimated_deficit_metrics.today)
@@ -893,10 +893,14 @@ def _weight_value(value: str) -> float | None:
     return _float_value(value.split(" ", 1)[0])
 
 
-def _body_rows(measures: list[dict[str, str]]) -> list[str]:
+def _body_rows(
+    measures: list[dict[str, str]],
+    historical_measures: list[dict[str, str]],
+    target_date: date,
+) -> list[str]:
     rows = []
     in_derived_metrics = False
-    for label, value in _body_kv_rows(measures):
+    for label, value in _body_kv_rows(measures, historical_measures, target_date):
         if label in DERIVED_BODY_METRIC_LABELS and not in_derived_metrics:
             rows.append("| ----- |  |")
             in_derived_metrics = True
@@ -904,10 +908,14 @@ def _body_rows(measures: list[dict[str, str]]) -> list[str]:
     return rows
 
 
-def _terminal_body_kv_rows(measures: list[dict[str, str]]) -> list[tuple[str, str]]:
+def _terminal_body_kv_rows(
+    measures: list[dict[str, str]],
+    historical_measures: list[dict[str, str]],
+    target_date: date,
+) -> list[tuple[str, str]]:
     terminal_rows = []
     in_derived_metrics = False
-    for label, value in _body_kv_rows(measures):
+    for label, value in _body_kv_rows(measures, historical_measures, target_date):
         if label in DERIVED_BODY_METRIC_LABELS and not in_derived_metrics:
             terminal_rows.append(("-----", ""))
             in_derived_metrics = True
@@ -915,7 +923,11 @@ def _terminal_body_kv_rows(measures: list[dict[str, str]]) -> list[tuple[str, st
     return terminal_rows
 
 
-def _body_kv_rows(measures: list[dict[str, str]]) -> list[tuple[str, str]]:
+def _body_kv_rows(
+    measures: list[dict[str, str]],
+    historical_measures: list[dict[str, str]],
+    target_date: date,
+) -> list[tuple[str, str]]:
     if not measures:
         return []
 
@@ -942,7 +954,7 @@ def _body_kv_rows(measures: list[dict[str, str]]) -> list[tuple[str, str]]:
     for type_name, measure in latest_by_type.items():
         if type_name not in main_types:
             rows.append((type_name or "measurement", _measure_value(measure)))
-    bmi = _bmi_value(latest_by_type.get("weight"), _height_measure(latest_by_type))
+    bmi = _bmi_value(latest_by_type.get("weight"), _latest_historical_height(historical_measures, target_date))
     bmr = _bmr_value(latest_by_type.get("fat_free_mass"))
     if bmi is not None:
         rows.append(("BMI", bmi))
@@ -986,8 +998,26 @@ def _bmi_value(weight: dict[str, str] | None, height: dict[str, str] | None) -> 
     return f"{weight_kg / (height_m * height_m):.2f}"
 
 
-def _height_measure(measures: dict[str, dict[str, str]]) -> dict[str, str] | None:
-    return measures.get("height") or measures.get("type_4")
+def _latest_historical_height(
+    historical_measures: list[dict[str, str]],
+    target_date: date,
+) -> dict[str, str] | None:
+    height_measures = [
+        measure
+        for measure in historical_measures
+        if measure.get("type_name") in {"height", "type_4"}
+        and (measure_date := _measure_date(measure)) is not None
+        and measure_date <= target_date
+    ]
+    if not height_measures:
+        return None
+    return max(
+        height_measures,
+        key=lambda measure: (
+            _measure_date(measure) or date.min,
+            measure.get("datetime_local", ""),
+        ),
+    )
 
 
 def _body_fat_value(measures: dict[str, dict[str, str]]) -> str:

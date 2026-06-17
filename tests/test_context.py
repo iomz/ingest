@@ -124,14 +124,20 @@ class ContextTest(unittest.TestCase):
         self.assertNotIn("Total swimming distance: 0.00 km", content)
 
     def test_renders_bmr_from_fat_free_mass(self) -> None:
+        measures = [
+            body_measure(date(2026, 5, 29), "weight", 99.00),
+            body_measure(date(2026, 5, 29), "fat_free_mass", 68.60),
+        ]
+        historical_measures = [
+            body_measure(date(2024, 1, 1), "height", 1.80, "m"),
+            *measures,
+        ]
+
         content = render_daily_context(
             date(2026, 5, 29),
             [],
-            [
-                body_measure(date(2026, 5, 29), "weight", 99.00),
-                body_measure(date(2026, 5, 29), "height", 1.80, "m"),
-                body_measure(date(2026, 5, 29), "fat_free_mass", 68.60),
-            ],
+            measures,
+            historical_measures,
         )
 
         self.assertNotIn("| height |", content)

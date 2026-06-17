@@ -13,6 +13,7 @@ from ingest.sources.withings import (
     authorization_url,
     fetch_activity_windowed,
     fetch_body_measures_windowed,
+    fetch_latest_height,
     fetch_workouts_windowed_if_available,
     fetch_workouts_windowed,
     lagging_local_date,
@@ -23,6 +24,7 @@ from ingest.sources.withings import (
     normalize_measure_groups,
     normalize_workouts,
     sync,
+    sync_range,
     write_activity,
     write_measures,
     write_workouts,
@@ -52,6 +54,40 @@ class FakeSession:
         if isinstance(data, dict) and data.get("action") == "getworkouts":
             return FakeResponse({"series": []})
         return FakeResponse({"measuregrps": []})
+
+
+class HeightSession(FakeSession):
+    def post(self, *args: object, **kwargs: object) -> FakeResponse:
+        self.calls.append(kwargs)
+        data = kwargs.get("data", {})
+        if isinstance(data, dict) and data.get("action") == "getactivity":
+            return FakeResponse({"activities": []})
+        if isinstance(data, dict) and data.get("action") == "getworkouts":
+            return FakeResponse({"series": []})
+        if isinstance(data, dict) and data.get("meastypes") == "4":
+            return FakeResponse(
+                {
+                    "measuregrps": [
+                        {"grpid": 1, "date": 1704067200, "measures": [{"type": 4, "value": 179, "unit": -2}]},
+                        {"grpid": 2, "date": 1780041600, "measures": [{"type": 4, "value": 180, "unit": -2}]},
+                    ]
+                }
+            )
+        return FakeResponse({"measuregrps": []})
+
+
+class SessionProvider:
+    def __init__(self, session: FakeSession) -> None:
+        self.session = session
+
+    def Session(self) -> "SessionProvider":
+        return self
+
+    def __enter__(self) -> FakeSession:
+        return self.session
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        return None
 
 
 class UnavailableWorkoutSession(FakeSession):
@@ -510,6 +546,41 @@ access_token = "access"
 
         self.assertEqual(body, {"measuregrps": []})
         self.assertEqual(len(session.calls), 2)
+
+    def test_fetches_latest_height_from_full_history(self) -> None:
+        session = HeightSession()
+
+        body = fetch_latest_height(session, "access", end_date=date(2026, 5, 29))
+
+        self.assertEqual(
+            body,
+            {"measuregrps": [{"grpid": 2, "date": 1780041600, "measures": [{"type": 4, "value": 180, "unit": -2}]}]},
+        )
+        self.assertEqual(session.calls[0]["data"]["meastypes"], "4")
+        self.assertLess(session.calls[0]["data"]["startdate"], session.calls[0]["data"]["enddate"])
+
+    def test_sync_range_merges_latest_height_into_recent_measures(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = write_config(root, extra='[withings]\naccess_token = "access"')
+            config = load_config(config_path)
+            session = HeightSession()
+
+            with mock.patch("ingest.sources.withings._requests", return_value=SessionProvider(session)):
+                written = sync_range(
+                    config,
+                    date(2026, 5, 29),
+                    date(2026, 5, 29),
+                    raw_name="body_measures_sync.json",
+                )
+
+            self.assertIn(data_dir / "withings/body_measures.csv", written)
+            with (data_dir / "withings/body_measures.csv").open(encoding="utf-8", newline="") as csv_file:
+                rows = list(csv.DictReader(csv_file))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["type_name"], "height")
+            self.assertEqual(rows[0]["value"], "1.80")
 
     def test_fetches_withings_activity_in_date_windows(self) -> None:
         session = FakeSession()
