@@ -39,6 +39,15 @@ class HevyConfig:
 
 
 @dataclass(frozen=True)
+class SuuntoConfig:
+    enabled: bool
+    command: str
+    workouts_csv: Path
+    raw_dir: Path
+    days: int
+
+
+@dataclass(frozen=True)
 class AppConfig:
     path: Path
     data: dict[str, Any]
@@ -47,6 +56,7 @@ class AppConfig:
     daily_context_path: Path
     withings: WithingsConfig
     hevy: HevyConfig
+    suunto: SuuntoConfig
 
     @property
     def today_context_path(self) -> Path:
@@ -71,6 +81,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
     daily_context_path = generated_dir / "daily_context.md"
     withings = _load_withings_config(data, data_dir)
     hevy = _load_hevy_config(data, data_dir)
+    suunto = _load_suunto_config(data, data_dir)
     return AppConfig(
         path=config_path,
         data=data,
@@ -79,6 +90,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         daily_context_path=daily_context_path,
         withings=withings,
         hevy=hevy,
+        suunto=suunto,
     )
 
 
@@ -200,6 +212,23 @@ def _load_hevy_config(data: dict[str, Any], data_dir: Path) -> HevyConfig:
             hevy.get("login_timeout_seconds", 300),
             "hevy.login_timeout_seconds",
         ),
+    )
+
+
+def _load_suunto_config(data: dict[str, Any], data_dir: Path) -> SuuntoConfig:
+    suunto = data.get("suunto", {})
+    sync = data.get("sync", {}).get("suunto", {})
+    return SuuntoConfig(
+        enabled=bool(suunto.get("enabled", False)),
+        command=str(Path(str(suunto.get("command", "")).strip() or "suuntool").expanduser()),
+        workouts_csv=_configured_data_path(
+            data_dir,
+            suunto,
+            "suunto.workouts_csv",
+            Path("suunto/workouts.csv"),
+        ),
+        raw_dir=_configured_data_path(data_dir, suunto, "suunto.raw_dir", Path("suunto/raw")),
+        days=_positive_int(sync.get("days", 30), "sync.suunto.days"),
     )
 
 
