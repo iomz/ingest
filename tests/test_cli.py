@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -285,6 +286,25 @@ class CliTest(unittest.TestCase):
             withings_sync.assert_called_once()
             hevy_sync.assert_called_once()
             self.assertEqual(stdout.getvalue(), f"{withings_path}\n{hevy_path}\n")
+
+    def test_sync_all_fetches_sources_concurrently(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "ingest.toml"
+            config_path.write_text("", encoding="utf-8")
+            barrier = threading.Barrier(2, timeout=1)
+
+            def sync_source(_config: object) -> list[Path]:
+                barrier.wait()
+                return []
+
+            with (
+                mock.patch("ingest.cli.withings.sync", side_effect=sync_source),
+                mock.patch("ingest.cli.hevy.sync", side_effect=sync_source),
+            ):
+                exit_code = main(["--config", str(config_path), "sync", "all"])
+
+            self.assertEqual(exit_code, 0)
 
     def test_today_sync_runs_all_sources_before_rendering(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
