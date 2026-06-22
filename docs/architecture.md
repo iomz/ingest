@@ -32,9 +32,11 @@ Sources
   -> Brain
 ```
 
-Current source:
+Current sources:
 
 - Withings
+- Hevy
+- Suunto through the optional external `suuntool` adapter
 
 Likely future sources:
 
@@ -79,6 +81,14 @@ ingest/
 ├── withings/
 │   ├── raw/
 │   ├── body_measures.csv
+│   └── workouts.csv
+├── hevy/
+│   ├── browser/
+│   ├── raw/
+│   ├── workouts.csv
+│   └── sets.csv
+├── suunto/
+│   ├── raw/
 │   └── workouts.csv
 └── generated/
     └── daily_context.md
