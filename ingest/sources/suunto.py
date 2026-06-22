@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -167,7 +167,7 @@ def _local_time(value: Any) -> str:
     milliseconds = _float_value(value)
     if milliseconds <= 0:
         return ""
-    return datetime.fromtimestamp(milliseconds / 1000).astimezone().isoformat()
+    return datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc).astimezone().isoformat()
 
 
 def _optional_distance_km(value: Any) -> str:

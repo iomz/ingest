@@ -21,7 +21,7 @@ Sources
 ```
 
 Current code fetches Withings data, imports Hevy workout exports, writes local
-records, builds a `DailyState`, and renders AI-readable daily context. Future
+records, builds a `DailyState`, and renders AI-readable daily context. Suunto activities can optionally be fetched through `suuntool`. Future
 OpenAI API calls and Brain vault writes belong after rendered context.
 
 ## Derived Metrics
@@ -78,6 +78,7 @@ Source maintenance:
 ```sh
 ingest sync withings
 ingest sync hevy
+ingest sync suunto
 ingest sync all
 ingest backfill withings --from 2024-01-01
 ```
@@ -93,6 +94,8 @@ Profile > Settings > Export & Import Data > Export Data > Export Workouts.
 `ingest sync hevy` automates that export with a dedicated Playwright browser
 profile stored under the application data directory. On the first run, log in to
 Hevy in the opened browser window, then rerun the command.
+
+Suunto sync uses the user-managed [`suuntool`](https://github.com/tajchert/suuntool) command. Install it and run `suuntool login` separately, then enable `[suunto]` in `ingest.toml`. `suunto.command` accepts an absolute executable path and otherwise defaults to `suuntool` from PATH.
 
 Withings OAuth helpers:
 
@@ -150,6 +153,9 @@ ${XDG_DATA_HOME:-~/.local/share}/ingest/
 │   ├── raw/
 │   ├── workouts.csv
 │   └── sets.csv
+├── suunto/
+│   ├── raw/
+│   └── workouts.csv
 └── generated/
     └── daily_context.md
 ```
