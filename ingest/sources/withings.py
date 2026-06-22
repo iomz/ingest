@@ -30,7 +30,7 @@ BODY_MEASURE_TYPES = {
 }
 BODY_MEASURE_TYPE_IDS = ",".join(str(measure_type) for measure_type in BODY_MEASURE_TYPES)
 HEIGHT_MEASURE_TYPE_ID = "4"
-HEIGHT_LOOKBACK_START = date(1970, 1, 1)
+HEIGHT_LOOKBACK_START = date(2010, 1, 1)
 
 MEASURE_FIELDS = [
     "grpid",
@@ -114,7 +114,9 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
     with requests.Session() as session:
         access_token = get_access_token(session, config)
         measures = fetch_body_measures_windowed(session, access_token, start_date=start_date, end_date=end_date)
-        height = fetch_latest_height(session, access_token, end_date=end_date)
+        height = {"measuregrps": []}
+        if not has_cached_height(config.withings.measures_csv):
+            height = fetch_latest_height(session, access_token, end_date=end_date)
         activity = fetch_activity_windowed(
             session,
             access_token,
@@ -521,6 +523,10 @@ def read_measure_rows(path: Path) -> list[dict[str, Any]]:
 
     with path.open(encoding="utf-8", newline="") as csv_file:
         return list(csv.DictReader(csv_file))
+
+
+def has_cached_height(path: Path) -> bool:
+    return any(_int_or_zero(row.get("type")) == 4 for row in read_measure_rows(path))
 
 
 def read_workout_rows(path: Path) -> list[dict[str, Any]]:

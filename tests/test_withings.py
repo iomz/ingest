@@ -16,6 +16,7 @@ from ingest.sources.withings import (
     fetch_latest_height,
     fetch_workouts_windowed_if_available,
     fetch_workouts_windowed,
+    has_cached_height,
     lagging_local_date,
     merge_activity_rows,
     merge_measure_rows,
@@ -556,10 +557,22 @@ access_token = "access"
             body,
             {"measuregrps": [{"grpid": 2, "date": 1780041600, "measures": [{"type": 4, "value": 180, "unit": -2}]}]},
         )
-        self.assertGreater(len(session.calls), 1)
+        self.assertEqual(len(session.calls), 67)
+        self.assertEqual(date.fromtimestamp(session.calls[0]["data"]["startdate"]), date(2010, 1, 1))
         for call in session.calls:
             self.assertEqual(call["data"]["meastypes"], "4")
             self.assertLessEqual(call["data"]["enddate"] - call["data"]["startdate"], 90 * 24 * 60 * 60)
+
+    def test_detects_cached_height(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            measures_csv = Path(temp_dir) / "body_measures.csv"
+            _write_csv_lines(
+                measures_csv,
+                "grpid,date,datetime_local,type,type_name,value,unit",
+                ["1,2020-01-01,2020-01-01T00:00:00,4,height,1.80,m"],
+            )
+
+            self.assertTrue(has_cached_height(measures_csv))
 
     def test_sync_range_merges_latest_height_into_recent_measures(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -583,6 +596,29 @@ access_token = "access"
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["type_name"], "height")
             self.assertEqual(rows[0]["value"], "1.80")
+
+    def test_sync_range_skips_height_fetch_when_height_is_cached(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = write_config(root, extra='[withings]\naccess_token = "access"')
+            write_withings_csvs(
+                data_dir,
+                measures=["1,2020-01-01,2020-01-01T00:00:00,4,height,1.80,m"],
+            )
+            config = load_config(config_path)
+            session = HeightSession()
+
+            with mock.patch("ingest.sources.withings._requests", return_value=SessionProvider(session)):
+                sync_range(
+                    config,
+                    date(2026, 5, 29),
+                    date(2026, 5, 29),
+                    raw_name="body_measures_sync.json",
+                )
+
+            height_calls = [call for call in session.calls if call.get("data", {}).get("meastypes") == "4"]
+            self.assertEqual(height_calls, [])
 
     def test_fetches_withings_activity_in_date_windows(self) -> None:
         session = FakeSession()
