@@ -25,6 +25,7 @@ class CliTest(unittest.TestCase):
         yesterday_markdown_args = parser.parse_args(["yesterday", "--markdown"])
         sync_args = parser.parse_args(["sync", "withings"])
         sync_hevy_args = parser.parse_args(["sync", "hevy"])
+        sync_suunto_args = parser.parse_args(["sync", "suunto"])
         sync_all_args = parser.parse_args(["sync", "all"])
         import_args = parser.parse_args(["import", "hevy", "--csv", "hevy.csv"])
         backfill_args = parser.parse_args(["backfill", "withings", "--from", "2026-01-01"])
@@ -49,6 +50,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(sync_args.command, "withings")
         self.assertEqual(sync_hevy_args.source, "sync")
         self.assertEqual(sync_hevy_args.command, "hevy")
+        self.assertEqual(sync_suunto_args.command, "suunto")
         self.assertEqual(sync_all_args.source, "sync")
         self.assertEqual(sync_all_args.command, "all")
         self.assertEqual(import_args.source, "import")
@@ -278,6 +280,7 @@ class CliTest(unittest.TestCase):
             with (
                 mock.patch("ingest.cli.withings.sync", return_value=[withings_path]) as withings_sync,
                 mock.patch("ingest.cli.hevy.sync", return_value=[hevy_path]) as hevy_sync,
+                mock.patch("ingest.cli.suunto.sync_async", new=mock.AsyncMock()) as suunto_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "all"])
@@ -285,7 +288,37 @@ class CliTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             withings_sync.assert_called_once()
             hevy_sync.assert_called_once()
+            suunto_sync.assert_not_awaited()
             self.assertEqual(stdout.getvalue(), f"{withings_path}\n{hevy_path}\n")
+
+    def test_sync_all_includes_enabled_suunto(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            withings_path = data_dir / "withings/body_measures.csv"
+            hevy_path = data_dir / "hevy/workouts.csv"
+            suunto_path = data_dir / "suunto/workouts.csv"
+            config_path.write_text(
+                f'[app]\ndata_dir = "{data_dir}"\n\n[suunto]\nenabled = true\n',
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with (
+                mock.patch("ingest.cli.withings.sync", return_value=[withings_path]),
+                mock.patch("ingest.cli.hevy.sync", return_value=[hevy_path]),
+                mock.patch(
+                    "ingest.cli.suunto.sync_async",
+                    new=mock.AsyncMock(return_value=[suunto_path]),
+                ) as suunto_sync,
+                contextlib.redirect_stdout(stdout),
+            ):
+                exit_code = main(["--config", str(config_path), "sync", "all"])
+
+            self.assertEqual(exit_code, 0)
+            suunto_sync.assert_awaited_once()
+            self.assertEqual(stdout.getvalue(), f"{withings_path}\n{hevy_path}\n{suunto_path}\n")
 
     def test_sync_all_fetches_sources_concurrently(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
