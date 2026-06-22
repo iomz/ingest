@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Callable
+
+import anyio
 
 from ingest.config import AppConfig, load_config
 from ingest.context import (
@@ -175,7 +178,32 @@ def _sync_for_daily_context(config: AppConfig, enabled: bool) -> None:
 
 
 def _sync_all(config: AppConfig) -> list[Path]:
-    return [*withings.sync(config), *hevy.sync(config)]
+    return anyio.run(_sync_all_async, config)
+
+
+async def _sync_all_async(config: AppConfig) -> list[Path]:
+    sources: list[tuple[str, Callable[[AppConfig], list[Path]]]] = [
+        ("withings", withings.sync),
+        ("hevy", hevy.sync),
+    ]
+    results: dict[str, list[Path]] = {}
+    errors: dict[str, BaseException] = {}
+
+    async def run_source(name: str, sync_source: Callable[[AppConfig], list[Path]]) -> None:
+        try:
+            results[name] = await anyio.to_thread.run_sync(sync_source, config)
+        except BaseException as exc:
+            errors[name] = exc
+
+    async with anyio.create_task_group() as task_group:
+        for name, sync_source in sources:
+            task_group.start_soon(run_source, name, sync_source)
+
+    for name, _sync_source in sources:
+        if name in errors:
+            raise errors[name]
+
+    return [path for name, _sync_source in sources for path in results[name]]
 
 
 def _print_daily_context(config: AppConfig, target: date) -> int:
