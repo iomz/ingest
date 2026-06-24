@@ -58,7 +58,7 @@ def canonical_activity_type(raw_type: str) -> str:
         return "walk"
     if value in {"swim", "swimming", "openwater swimming"}:
         return "swim"
-    if value in {"run", "running", "trail running", "track running", "vertical run"}:
+    if value in {"run", "running", "trail running", "track running", "treadmill", "vertical run"}:
         return "run"
     if value in {
         "ride",

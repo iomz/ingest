@@ -142,6 +142,26 @@ command = "{command_path}"
         with self.assertRaisesRegex(SystemExit, "line 2"):
             suunto.parse_workouts('{"key":"ok"}\nnot-json\n')
 
+    def test_rejects_workout_without_key(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "missing key"):
+            suunto.normalize_workouts([{"activityId": 1, "startTime": 1_782_255_600_000}])
+
+    def test_rejects_workout_with_invalid_start_time(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "invalid startTime"):
+            suunto.normalize_workouts([{"key": "bad-start", "activityId": 1, "startTime": "invalid"}])
+
+    def test_rejects_workout_without_activity_identity(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "invalid activityId"):
+            suunto.normalize_workouts([{"key": "missing-activity", "startTime": 1_782_255_600_000}])
+
+    def test_preserves_unknown_numeric_activity_id(self) -> None:
+        rows = suunto.normalize_workouts(
+            [{"key": "unknown", "activityId": 999, "startTime": 1_782_255_600_000}]
+        )
+
+        self.assertEqual(rows[0]["raw_type"], "activity_999")
+        self.assertEqual(rows[0]["activity_type"], "activity 999")
+
     def test_daily_state_includes_normalized_suunto_activity(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

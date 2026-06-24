@@ -8,6 +8,7 @@ from typing import Any
 
 import anyio
 
+from ingest.activities import canonical_activity_type
 from ingest.app_data import write_csv_file, write_json_file
 from ingest.config import AppConfig, SuuntoConfig
 
@@ -61,9 +62,9 @@ async def sync_async(config: AppConfig, *, end_date: date | None = None) -> list
     existing_rows = read_workout_rows(config.suunto.workouts_csv)
     since = _sync_start_date(existing_rows, cutoff, config.suunto.days)
     workouts = await fetch_workouts(config.suunto, since)
+    raw_path = write_json_file(config.suunto.raw_dir / "workouts_sync.json", workouts)
     normalized_rows = normalize_workouts(workouts)
     merged_rows = _merge_workout_rows(existing_rows, normalized_rows)
-    raw_path = write_json_file(config.suunto.raw_dir / "workouts_sync.json", workouts)
     workouts_path = write_csv_file(config.suunto.workouts_csv, merged_rows, WORKOUT_FIELDS)
     return [raw_path, workouts_path]
 
@@ -110,17 +111,17 @@ def parse_workouts(output: str) -> list[dict[str, Any]]:
 
 def normalize_workouts(workouts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for workout in workouts:
+    for index, workout in enumerate(workouts, start=1):
         source_id = str(workout.get("key", "")).strip()
+        if not source_id:
+            raise SystemExit(f"Suunto workout {index} is missing key.")
+
         start_time = _local_time(workout.get("startTime"))
-        if not source_id or not start_time:
-            continue
+        if not start_time:
+            raise SystemExit(f"Suunto workout {source_id!r} has invalid startTime.")
+
         duration_seconds = _float_value(workout.get("totalTime"))
-        activity_id = _int_value(workout.get("activityId"))
-        raw_type = str(workout.get("activityName", "")).strip() or ACTIVITY_NAMES.get(
-            activity_id,
-            f"activity_{activity_id}",
-        )
+        raw_type = _activity_name(workout, source_id)
         rows.append(
             {
                 "source": "suunto",
@@ -130,7 +131,7 @@ def normalize_workouts(workouts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "duration_min": f"{duration_seconds / 60:.2f}",
                 "distance_km": _optional_distance_km(workout.get("totalDistance")),
                 "step_count": _int_value(workout.get("stepCount")),
-                "activity_type": _canonical_activity_type(raw_type),
+                "activity_type": canonical_activity_type(raw_type),
                 "raw_type": raw_type,
                 "name": raw_type.replace("_", " ").title(),
                 "notes": "",
@@ -175,19 +176,17 @@ def _optional_distance_km(value: Any) -> str:
     return f"{meters / 1000:.2f}" if meters > 0 else ""
 
 
-def _canonical_activity_type(raw_type: str) -> str:
-    value = raw_type.lower()
-    if "walk" in value or value in {"hiking", "trekking"}:
-        return "walk"
-    if "swim" in value:
-        return "swim"
-    if "run" in value or value == "treadmill":
-        return "run"
-    if "cycling" in value or "biking" in value or value in {"e_mtb", "hand_cycling"}:
-        return "ride"
-    if value in {"gym", "outdoor_gym", "crossfit", "kettlebell", "calisthenics"}:
-        return "strength"
-    return value.replace("_", " ")
+def _activity_name(workout: dict[str, Any], source_id: str) -> str:
+    activity_name = str(workout.get("activityName", "")).strip()
+    if activity_name:
+        return activity_name
+
+    activity_id = _optional_int_value(workout.get("activityId"))
+    if activity_id is None:
+        raise SystemExit(
+            f"Suunto workout {source_id!r} is missing activityName and has invalid activityId."
+        )
+    return ACTIVITY_NAMES.get(activity_id, f"activity_{activity_id}")
 
 
 def _is_iso_date(value: str) -> bool:
@@ -210,3 +209,10 @@ def _int_value(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _optional_int_value(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

@@ -8,7 +8,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from ingest.cli import build_parser, main
+import anyio
+
+from ingest.cli import _sync_all_async, build_parser, main
+from ingest.config import load_config
 
 
 class CliTest(unittest.TestCase):
@@ -338,6 +341,34 @@ class CliTest(unittest.TestCase):
                 exit_code = main(["--config", str(config_path), "sync", "all"])
 
             self.assertEqual(exit_code, 0)
+
+    def test_sync_all_does_not_swallow_base_exceptions(self) -> None:
+        class CancellationSignal(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                f'[app]\ndata_dir = "{root / "app-data"}"\n\n[suunto]\nenabled = true\n',
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            with (
+                mock.patch("ingest.cli.withings.sync", return_value=[]),
+                mock.patch("ingest.cli.hevy.sync", return_value=[]),
+                mock.patch(
+                    "ingest.cli.suunto.sync_async",
+                    new=mock.AsyncMock(side_effect=CancellationSignal),
+                ),
+            ):
+                with self.assertRaises(BaseExceptionGroup) as raised:
+                    anyio.run(_sync_all_async, config)
+
+            self.assertTrue(
+                any(isinstance(exc, CancellationSignal) for exc in raised.exception.exceptions)
+            )
 
     def test_today_sync_runs_all_sources_before_rendering(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

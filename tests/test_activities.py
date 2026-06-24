@@ -29,6 +29,7 @@ class ActivitiesTest(unittest.TestCase):
         self.assertEqual(canonical_activity_type("indoor walking"), "walk")
         self.assertEqual(canonical_activity_type("swimming"), "swim")
         self.assertEqual(canonical_activity_type("running"), "run")
+        self.assertEqual(canonical_activity_type("treadmill"), "run")
         self.assertEqual(canonical_activity_type("cycling"), "ride")
 
 

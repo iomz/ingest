@@ -196,12 +196,12 @@ async def _sync_all_async(config: AppConfig) -> list[Path]:
     if config.suunto.enabled:
         sources.append(("suunto", lambda: suunto.sync_async(config)))
     results: dict[str, list[Path]] = {}
-    errors: dict[str, BaseException] = {}
+    errors: dict[str, Exception | SystemExit] = {}
 
     async def run_source(name: str, sync_source: Callable[[], Awaitable[list[Path]]]) -> None:
         try:
             results[name] = await sync_source()
-        except BaseException as exc:
+        except (Exception, SystemExit) as exc:
             errors[name] = exc
 
     async with anyio.create_task_group() as task_group:
