@@ -1,33 +1,14 @@
 # Metrics
 
-## Activity Level
+## Activity Sources
 
-Activity level uses explicit workouts plus estimated unlogged steps from the
-Withings daily step total.
+Withings remains authoritative for daily step totals and body metrics.
 
-- None: no workouts and no unlogged steps
-- Light: <=5 km and <=60 min
-- Moderate: <=12 km and <=120 min
-- High: more than 12 km or 120 min
-
-## Activity Score
-
-Activity Score uses non-swimming distance plus duration:
-
-`score = distance_km + duration_min / 12`
-
-When Withings daily steps are available, ingest subtracts steps already covered
-by logged walk/run workouts before adding step effort. Logged walk/run steps come
-from workout step counts when present; otherwise they are estimated from distance
-(1300 steps/km walking, 1200 steps/km running). Remaining daily steps are treated
-as walking-equivalent effort (1300 steps/km, 12 min/km). This keeps total daily
-steps represented while avoiding double-counting explicit walk/run workouts.
-
-## Recovery Compatibility
-
-- Good: None or Light
-- Acceptable: Moderate
-- Poor: High
+Suunto is authoritative for workout distance, duration, activity type, heart
+rate, TSS, activity energy, and recovery time. Matching Withings activity rows
+are suppressed from Physical Context aggregation so mirrored Apple Health or
+Suunto workouts do not inflate movement totals or walking trends. Source CSVs
+remain unchanged.
 
 ## Walking Trend
 

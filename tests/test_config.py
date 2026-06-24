@@ -31,6 +31,7 @@ days = 21
             config = load_config(config_path)
 
             self.assertEqual(config.data_dir, root / "app-data")
+            self.assertEqual(str(config.timezone), "Asia/Tokyo")
             self.assertEqual(config.daily_context_path, root / "app-data/generated/daily_context.md")
             self.assertEqual(config.withings.client_id, "withings-client")
             self.assertEqual(config.withings.client_secret, "withings-secret")
@@ -49,6 +50,23 @@ days = 21
             self.assertEqual(config.suunto.workouts_csv, root / "app-data/suunto/workouts.csv")
             self.assertEqual(config.suunto.raw_dir, root / "app-data/suunto/raw")
             self.assertEqual(config.suunto.days, 30)
+
+    def test_loads_explicit_timezone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text('[app]\ntimezone = "America/New_York"\n', encoding="utf-8")
+
+            config = load_config(config_path)
+
+            self.assertEqual(str(config.timezone), "America/New_York")
+
+    def test_rejects_invalid_timezone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text('[app]\ntimezone = "Not/AZone"\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(SystemExit, "valid IANA timezone"):
+                load_config(config_path)
 
     def test_loads_enabled_suunto_command_and_sync_window(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

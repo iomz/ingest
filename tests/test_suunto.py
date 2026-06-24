@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import unittest
@@ -9,9 +10,10 @@ from types import SimpleNamespace
 from unittest import mock
 
 import anyio
+from rich.console import Console
 
 from ingest.config import load_config
-from ingest.context import build_daily_state
+from ingest.context import build_daily_state, generate_daily_context, render_daily_terminal_context
 from ingest.sources import suunto
 
 
@@ -179,6 +181,79 @@ command = "{command_path}"
         self.assertEqual(rows[0]["start_time"], "2026-06-02T23:30:00+00:00")
         self.assertEqual(rows[0]["end_time"], "2026-06-03T00:00:00+00:00")
 
+    def test_normalizes_optional_workout_metrics(self) -> None:
+        rows = suunto.normalize_workouts(
+            [
+                {
+                    "key": "metrics",
+                    "activityId": 1,
+                    "startTime": 1_782_255_600_000,
+                    "totalTime": 3600,
+                    "energyConsumption": 321.5,
+                    "hrdata": {
+                        "avg": 120,
+                        "max": 160,
+                        "workoutAvgHR": 145,
+                        "workoutMaxHR": 172,
+                    },
+                    "tss": {
+                        "trainingStressScore": 62.4,
+                        "calculationMethod": "HR",
+                        "intensityFactor": 0.84,
+                    },
+                    "recoveryTime": 28_800,
+                    "extensions": [{"type": "FitnessExtension", "vo2Max": 52.1}],
+                }
+            ]
+        )
+
+        self.assertEqual(rows[0]["energy_kcal"], "321.5")
+        self.assertEqual(rows[0]["avg_hr"], "145")
+        self.assertEqual(rows[0]["max_hr"], "172")
+        self.assertEqual(rows[0]["tss_score"], "62.4")
+        self.assertEqual(rows[0]["tss_method"], "HR")
+        self.assertEqual(rows[0]["intensity_factor"], "0.84")
+        self.assertEqual(rows[0]["recovery_time_seconds"], "28800")
+
+    def test_missing_optional_workout_metrics_remain_empty(self) -> None:
+        row = suunto.normalize_workouts(
+            [{"key": "minimal", "activityId": 1, "startTime": 1_782_255_600_000}]
+        )[0]
+
+        for field in [
+            "energy_kcal",
+            "avg_hr",
+            "max_hr",
+            "tss_score",
+            "tss_method",
+            "intensity_factor",
+            "recovery_time_seconds",
+        ]:
+            self.assertEqual(row[field], "")
+
+    def test_normalizes_fallback_hr_fields(self) -> None:
+        rows = suunto.normalize_workouts(
+            [
+                {
+                    "key": "fallback-avg-max",
+                    "activityId": 1,
+                    "startTime": 1_782_255_600_000,
+                    "hrdata": {"avg": 111, "max": 149, "hrmax": 190},
+                },
+                {
+                    "key": "fallback-hrmax",
+                    "activityId": 1,
+                    "startTime": 1_782_255_700_000,
+                    "hrdata": {"avg": 112, "hrmax": 151},
+                },
+            ]
+        )
+
+        self.assertEqual(rows[0]["avg_hr"], "111")
+        self.assertEqual(rows[0]["max_hr"], "149")
+        self.assertEqual(rows[1]["avg_hr"], "112")
+        self.assertEqual(rows[1]["max_hr"], "151")
+
     def test_daily_state_includes_normalized_suunto_activity(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -204,6 +279,149 @@ command = "{command_path}"
             self.assertEqual(state.activities[0].source, "suunto")
             self.assertEqual(state.activities[0].activity_type, "run")
             self.assertEqual(state.activities[0].distance_km, 8.0)
+
+    def test_report_renders_suunto_activity_and_daily_load_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            workouts_path = data_dir / "suunto/workouts.csv"
+            workouts_path.parent.mkdir(parents=True)
+            workouts_path.write_text(
+                "\n".join(
+                    [
+                        ",".join(suunto.WORKOUT_FIELDS),
+                        "suunto,walk-1,2026-06-02T08:00:00+00:00,2026-06-02T08:30:00+00:00,30.00,2.50,3000,walk,WALKING,Walking,,200,100,130,12.5,HR,0.60,7200",
+                        "suunto,run-1,2026-06-02T12:00:00+00:00,2026-06-02T13:00:00+00:00,60.00,10.00,7000,run,RUNNING,Running,,400,130,170,30.2,POWER,0.85,28800",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            written = generate_daily_context(config, date(2026, 6, 2))
+            content = written.read_text(encoding="utf-8")
+            state = build_daily_state(config, date(2026, 6, 2))
+            terminal_output = io.StringIO()
+            render_daily_terminal_context(
+                state,
+                Console(file=terminal_output, width=160, color_system=None, force_terminal=False),
+            )
+
+            self.assertIn("| Load | TSS 42.7 · Recovery 8h |", content)
+            self.assertIn("| HR | avg 120 · max 170 |", content)
+            self.assertIn("| Energy | 600 kcal |", content)
+            self.assertIn(
+                "Suunto metrics: TSS 42.7, average HR 120, maximum HR 170, "
+                "activity energy 600 kcal, recovery time 8h.",
+                content,
+            )
+            self.assertNotIn("Activity score", content)
+            self.assertIn(
+                "WALKING: Walking (2.50 km, 30 min, 3,000 steps, 200 kcal, HR 100–130, TSS(hr) 12.5, Recovery 2h)",
+                content,
+            )
+            self.assertIn("Load      TSS 42.7 / Recovery 8h", terminal_output.getvalue())
+            self.assertIn("HR        avg 120 / max 170", terminal_output.getvalue())
+            self.assertIn("Energy    600 kcal", terminal_output.getvalue())
+
+    def test_report_prefers_suunto_when_withings_elapsed_duration_is_longer(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            withings_dir = data_dir / "withings"
+            withings_dir.mkdir(parents=True)
+            (withings_dir / "workouts.csv").write_text(
+                "\n".join(
+                    [
+                        "source,source_id,start_time,end_time,duration_min,distance_km,step_count,activity_type,raw_type,name",
+                        "withings,mirror-1,2026-06-24T14:14:21,2026-06-24T16:34:29,140.13,5.20,6723,walk,walk,Imported Walk",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (withings_dir / "activity.csv").write_text(
+                "date,step_count,distance_km\n2026-06-24,8949,6.10\n",
+                encoding="utf-8",
+            )
+            suunto_dir = data_dir / "suunto"
+            suunto_dir.mkdir(parents=True)
+            (suunto_dir / "workouts.csv").write_text(
+                "\n".join(
+                    [
+                        ",".join(suunto.WORKOUT_FIELDS),
+                        "suunto,suunto-walk,2026-06-24T05:14:21+00:00,2026-06-24T07:34:29+00:00,68.69,5.20,6620,walk,WALKING,Walking,,407,108,140,46,HR,0.72,7680",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            state = build_daily_state(config, date(2026, 6, 24))
+            written = generate_daily_context(config, date(2026, 6, 24))
+            content = written.read_text(encoding="utf-8")
+
+            self.assertEqual(len(state.activities), 1)
+            self.assertEqual(state.activities[0].source, "suunto")
+            self.assertIn("| Movement | 8,949 steps · 5.20 km walk |", content)
+            self.assertIn(
+                "| Walking distance | 5.20 km | 0.74 km/day | 0.17 km/day | Above 30-day average |",
+                content,
+            )
+            self.assertIn("- Activity count: 1", content)
+            self.assertIn("- Sources: Suunto", content)
+            self.assertIn("Additional movement: 5.20 km walking", content)
+            self.assertIn(
+                "Recorded 1 primary activity, 5.20 km walking, 69 min moving time, and 8,949 Withings steps.",
+                content,
+            )
+            self.assertIn("| Load | TSS 46.0 · Recovery 2.1h |", content)
+            self.assertIn("| HR | avg 108 · max 140 |", content)
+            self.assertIn("| Energy | 407 kcal |", content)
+            self.assertNotIn("10.40 km", content)
+            self.assertNotIn("209 min moving time", content)
+            self.assertNotIn("Recorded 2 primary activities", content)
+            self.assertNotIn("Imported Walk", content)
+            self.assertNotIn("Activity score", content)
+
+    def test_utc_suunto_workout_groups_by_tokyo_local_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n',
+                encoding="utf-8",
+            )
+            workouts_path = data_dir / "suunto/workouts.csv"
+            workouts_path.parent.mkdir(parents=True)
+            workouts_path.write_text(
+                "\n".join(
+                    [
+                        ",".join(suunto.WORKOUT_FIELDS),
+                        "suunto,midnight,2026-06-23T15:30:00+00:00,2026-06-23T16:00:00+00:00,30.00,2.00,2000,walk,WALKING,Walking,,,,,,,,",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            previous_day = build_daily_state(config, date(2026, 6, 23))
+            local_day = build_daily_state(config, date(2026, 6, 24))
+
+            self.assertEqual(previous_day.activities, [])
+            self.assertEqual(len(local_day.activities), 1)
+            self.assertEqual(
+                local_day.activities[0].start_time,
+                "2026-06-24T00:30:00+09:00",
+            )
 
 
 if __name__ == "__main__":

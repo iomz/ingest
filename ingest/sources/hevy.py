@@ -340,7 +340,7 @@ def _parse_hevy_time(value: str) -> str:
             pass
 
     try:
-        return datetime.fromisoformat(normalized.replace("Z", "+00:00")).replace(tzinfo=None).isoformat()
+        return datetime.fromisoformat(normalized.replace("Z", "+00:00")).isoformat()
     except ValueError:
         return ""
 
@@ -351,7 +351,7 @@ def _duration_min(start_time: str, end_time: str) -> str:
     try:
         start = datetime.fromisoformat(start_time)
         end = datetime.fromisoformat(end_time)
-    except ValueError:
+    except (TypeError, ValueError):
         return "0.00"
     return f"{max(0.0, (end - start).total_seconds()) / 60:.2f}"
 

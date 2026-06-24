@@ -379,12 +379,12 @@ class CliTest(unittest.TestCase):
             hevy_path = data_dir / "hevy/workouts.csv"
             config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
 
-            fake_date = mock.Mock()
-            fake_date.today.return_value = __import__("datetime").date(2026, 5, 29)
-            fake_date.fromisoformat = __import__("datetime").date.fromisoformat
             stdout = io.StringIO()
             with (
-                mock.patch("ingest.cli.date", fake_date),
+                mock.patch(
+                    "ingest.cli._local_today",
+                    return_value=__import__("datetime").date(2026, 5, 29),
+                ),
                 mock.patch("ingest.cli.withings.sync", return_value=[withings_path]) as withings_sync,
                 mock.patch("ingest.cli.hevy.sync", return_value=[hevy_path]) as hevy_sync,
                 contextlib.redirect_stdout(stdout),
@@ -428,12 +428,12 @@ class CliTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            fake_date = mock.Mock()
-            fake_date.today.return_value = __import__("datetime").date(2026, 6, 3)
-            fake_date.fromisoformat = __import__("datetime").date.fromisoformat
             stdout = io.StringIO()
             with (
-                mock.patch("ingest.cli.date", fake_date),
+                mock.patch(
+                    "ingest.cli._local_today",
+                    return_value=__import__("datetime").date(2026, 6, 3),
+                ),
                 mock.patch("ingest.cli.withings.sync") as withings_sync,
                 contextlib.redirect_stdout(stdout),
             ):
@@ -474,12 +474,12 @@ class CliTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            fake_date = mock.Mock()
-            fake_date.today.return_value = __import__("datetime").date(2026, 5, 29)
-            fake_date.fromisoformat = __import__("datetime").date.fromisoformat
             stdout = io.StringIO()
             with (
-                mock.patch("ingest.cli.date", fake_date),
+                mock.patch(
+                    "ingest.cli._local_today",
+                    return_value=__import__("datetime").date(2026, 5, 29),
+                ),
                 mock.patch("ingest.cli.withings.sync") as withings_sync,
                 contextlib.redirect_stdout(stdout),
             ):
@@ -490,7 +490,8 @@ class CliTest(unittest.TestCase):
             output = stdout.getvalue()
             self.assertIn("Physical Context — 2026-05-29", output)
             self.assertIn("Daily Snapshot", output)
-            self.assertIn("Activity  Light / score 3.5 / trend unknown", output)
+            self.assertIn("Movement  unavailable steps / 1.00 km walk", output)
+            self.assertNotIn("Activity score", output)
             self.assertNotIn("·", output)
             self.assertNotIn("| Area | Status |", output)
 
@@ -513,12 +514,12 @@ class CliTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            fake_date = mock.Mock()
-            fake_date.today.return_value = __import__("datetime").date(2026, 5, 29)
-            fake_date.fromisoformat = __import__("datetime").date.fromisoformat
             stdout = io.StringIO()
             with (
-                mock.patch("ingest.cli.date", fake_date),
+                mock.patch(
+                    "ingest.cli._local_today",
+                    return_value=__import__("datetime").date(2026, 5, 29),
+                ),
                 mock.patch("ingest.cli.withings.sync") as withings_sync,
                 contextlib.redirect_stdout(stdout),
             ):
@@ -555,12 +556,12 @@ class CliTest(unittest.TestCase):
             config_path = root / "ingest.toml"
             config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
 
-            fake_date = mock.Mock()
-            fake_date.today.return_value = __import__("datetime").date(2026, 5, 30)
-            fake_date.fromisoformat = __import__("datetime").date.fromisoformat
             stdout = io.StringIO()
             with (
-                mock.patch("ingest.cli.date", fake_date),
+                mock.patch(
+                    "ingest.cli._local_today",
+                    return_value=__import__("datetime").date(2026, 5, 30),
+                ),
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "yesterday", "--markdown"])

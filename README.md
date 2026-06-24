@@ -127,6 +127,9 @@ mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}"
 cp config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/ingest.toml"
 ```
 
+`app.timezone` defines local report dates and interpretation of source
+timestamps without an explicit UTC offset. It defaults to `Asia/Tokyo`.
+
 Default application data directory:
 
 ```text
