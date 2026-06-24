@@ -162,6 +162,23 @@ command = "{command_path}"
         self.assertEqual(rows[0]["raw_type"], "activity_999")
         self.assertEqual(rows[0]["activity_type"], "activity 999")
 
+    def test_normalizes_workout_timestamps_in_utc(self) -> None:
+        start_ms = int(datetime(2026, 6, 2, 23, 30, tzinfo=timezone.utc).timestamp() * 1000)
+
+        rows = suunto.normalize_workouts(
+            [
+                {
+                    "key": "utc-boundary",
+                    "activityId": 1,
+                    "startTime": start_ms,
+                    "stopTime": start_ms + 1_800_000,
+                }
+            ]
+        )
+
+        self.assertEqual(rows[0]["start_time"], "2026-06-02T23:30:00+00:00")
+        self.assertEqual(rows[0]["end_time"], "2026-06-03T00:00:00+00:00")
+
     def test_daily_state_includes_normalized_suunto_activity(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
