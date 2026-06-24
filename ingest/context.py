@@ -12,6 +12,7 @@ from typing import Any
 from ingest.activities import (
     NormalizedActivity,
     normalize_hevy_activity,
+    normalize_suunto_activity,
     normalize_withings_activity,
 )
 from ingest.app_data import write_text_file
@@ -277,6 +278,8 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
     withings_activities_for_target = withings_activities_for_date(withings_activities, target_date)
     hevy_activities = read_hevy_activities(config.hevy.workouts_csv)
     hevy_activities_for_target = activities_for_date(hevy_activities, target_date)
+    suunto_activities = read_suunto_activities(config.suunto.workouts_csv)
+    suunto_activities_for_target = activities_for_date(suunto_activities, target_date)
     hevy_sets = sets_for_date(read_hevy_sets(config.hevy.sets_csv), target_date)
     all_measures = read_withings_measures(config.withings.measures_csv)
     measures = measures_for_date(all_measures, target_date)
@@ -290,6 +293,7 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
         activities=[
             *_normalize_withings_activities(withings_activities_for_target),
             *_normalize_hevy_activities(hevy_activities_for_target),
+            *_normalize_suunto_activities(suunto_activities_for_target),
         ],
         measures=measures,
         withings_activity_summaries=withings_activity_summaries,
@@ -297,6 +301,7 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
         historical_activities=[
             *_normalize_withings_activities(withings_activities),
             *_normalize_hevy_activities(hevy_activities),
+            *_normalize_suunto_activities(suunto_activities),
         ],
         historical_measures=all_measures,
         hevy_sets=hevy_sets,
@@ -329,6 +334,10 @@ def read_withings_activities(path: Path) -> list[dict[str, str]]:
 
 
 def read_hevy_activities(path: Path) -> list[dict[str, str]]:
+    return _read_activity_rows(path)
+
+
+def read_suunto_activities(path: Path) -> list[dict[str, str]]:
     return _read_activity_rows(path)
 
 
@@ -1958,6 +1967,10 @@ def _normalize_withings_activities(activities: list[dict[str, str]]) -> list[Nor
 
 def _normalize_hevy_activities(activities: list[dict[str, str]]) -> list[NormalizedActivity]:
     return [normalize_hevy_activity(activity) for activity in activities]
+
+
+def _normalize_suunto_activities(activities: list[dict[str, str]]) -> list[NormalizedActivity]:
+    return [normalize_suunto_activity(activity) for activity in activities]
 
 
 def _activity_sources(activities: list[NormalizedActivity]) -> str:

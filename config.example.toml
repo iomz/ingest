@@ -25,3 +25,15 @@ sets_csv = "hevy/sets.csv"
 raw_dir = "hevy/raw"
 browser_dir = "hevy/browser"
 login_timeout_seconds = 300
+
+[suunto]
+# Optional. Install and log in to suuntool separately, then enable this adapter.
+enabled = false
+# Defaults to `suuntool` from PATH. Set an absolute path when needed.
+command = "suuntool"
+workouts_csv = "suunto/workouts.csv"
+raw_dir = "suunto/raw"
+
+[sync.suunto]
+# Number of days to fetch when no local Suunto data exists.
+days = 30

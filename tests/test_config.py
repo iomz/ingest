@@ -44,6 +44,33 @@ days = 21
             self.assertEqual(config.hevy.raw_dir, root / "app-data/hevy/raw")
             self.assertEqual(config.hevy.browser_dir, root / "app-data/hevy/browser")
             self.assertEqual(config.hevy.login_timeout_seconds, 300)
+            self.assertFalse(config.suunto.enabled)
+            self.assertEqual(config.suunto.command, "suuntool")
+            self.assertEqual(config.suunto.workouts_csv, root / "app-data/suunto/workouts.csv")
+            self.assertEqual(config.suunto.raw_dir, root / "app-data/suunto/raw")
+            self.assertEqual(config.suunto.days, 30)
+
+    def test_loads_enabled_suunto_command_and_sync_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                """
+[suunto]
+enabled = true
+command = "~/bin/suuntool"
+
+[sync.suunto]
+days = 14
+""".strip(),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertTrue(config.suunto.enabled)
+            self.assertEqual(config.suunto.command, str(Path("~/bin/suuntool").expanduser()))
+            self.assertEqual(config.suunto.days, 14)
 
     def test_loads_flat_sync_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
