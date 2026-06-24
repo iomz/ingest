@@ -168,7 +168,7 @@ def _local_time(value: Any) -> str:
     milliseconds = _float_value(value)
     if milliseconds <= 0:
         return ""
-    return datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc).astimezone().isoformat()
+    return datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc).isoformat()
 
 
 def _optional_distance_km(value: Any) -> str:
