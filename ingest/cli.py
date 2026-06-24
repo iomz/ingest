@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 from datetime import date, timedelta
 from pathlib import Path
+from collections.abc import Awaitable, Callable
+
+import anyio
 
 from ingest.config import AppConfig, load_config
 from ingest.context import (
@@ -10,7 +13,7 @@ from ingest.context import (
     generate_daily_context,
     render_daily_terminal_context,
 )
-from ingest.sources import hevy, withings
+from ingest.sources import hevy, suunto, withings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_subparsers = sync_parser.add_subparsers(dest="command", required=True)
     sync_subparsers.add_parser("withings", help="Sync recent Withings measurements.")
     sync_subparsers.add_parser("hevy", help="Sync Hevy workouts from CSV export.")
+    sync_subparsers.add_parser("suunto", help="Sync Suunto activities through suuntool.")
     sync_subparsers.add_parser("all", help="Sync recent data from all configured sources.")
 
     import_parser = subparsers.add_parser("import", help="Import exported source data.")
@@ -100,6 +104,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.source == "sync" and args.command == "hevy":
         written_paths = hevy.sync(config)
+        for path in written_paths:
+            print(path)
+        return 0
+
+    if args.source == "sync" and args.command == "suunto":
+        written_paths = suunto.sync(config)
         for path in written_paths:
             print(path)
         return 0
@@ -175,7 +185,41 @@ def _sync_for_daily_context(config: AppConfig, enabled: bool) -> None:
 
 
 def _sync_all(config: AppConfig) -> list[Path]:
-    return [*withings.sync(config), *hevy.sync(config)]
+    return anyio.run(_sync_all_async, config)
+
+
+async def _sync_all_async(config: AppConfig) -> list[Path]:
+    sources: list[tuple[str, Callable[[], Awaitable[list[Path]]]]] = [
+        ("withings", lambda: _run_sync_source(withings.sync, config)),
+        ("hevy", lambda: _run_sync_source(hevy.sync, config)),
+    ]
+    if config.suunto.enabled:
+        sources.append(("suunto", lambda: suunto.sync_async(config)))
+    results: dict[str, list[Path]] = {}
+    errors: dict[str, Exception | SystemExit] = {}
+
+    async def run_source(name: str, sync_source: Callable[[], Awaitable[list[Path]]]) -> None:
+        try:
+            results[name] = await sync_source()
+        except (Exception, SystemExit) as exc:
+            errors[name] = exc
+
+    async with anyio.create_task_group() as task_group:
+        for name, sync_source in sources:
+            task_group.start_soon(run_source, name, sync_source)
+
+    for name, _sync_source in sources:
+        if name in errors:
+            raise errors[name]
+
+    return [path for name, _sync_source in sources for path in results[name]]
+
+
+async def _run_sync_source(
+    sync_source: Callable[[AppConfig], list[Path]],
+    config: AppConfig,
+) -> list[Path]:
+    return await anyio.to_thread.run_sync(sync_source, config)
 
 
 def _print_daily_context(config: AppConfig, target: date) -> int:

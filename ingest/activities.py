@@ -27,6 +27,10 @@ def normalize_hevy_activity(activity: dict[str, str]) -> NormalizedActivity:
     return normalize_activity(activity, source="hevy")
 
 
+def normalize_suunto_activity(activity: dict[str, str]) -> NormalizedActivity:
+    return normalize_activity(activity, source="suunto")
+
+
 def normalize_activity(activity: dict[str, str], *, source: str) -> NormalizedActivity:
     start_time = activity.get("start_time", "")
     duration_min = _float_value(activity.get("duration_min", ""))
@@ -40,7 +44,7 @@ def normalize_activity(activity: dict[str, str], *, source: str) -> NormalizedAc
         end_time=end_time,
         duration_min=duration_min,
         distance_km=distance_km,
-        activity_type=canonical_activity_type(raw_type),
+        activity_type=canonical_activity_type(activity.get("activity_type") or raw_type),
         raw_type=raw_type,
         name=activity.get("name", ""),
         notes=activity.get("notes", "") or activity.get("description", ""),
@@ -50,15 +54,35 @@ def normalize_activity(activity: dict[str, str], *, source: str) -> NormalizedAc
 
 def canonical_activity_type(raw_type: str) -> str:
     value = raw_type.strip().lower().replace("_", " ")
-    if value in {"walk", "walking", "indoor walking", "hike", "hiking"}:
+    if value in {"walk", "walking", "indoor walking", "hike", "hiking", "nordic walking", "trekking"}:
         return "walk"
-    if value in {"swim", "swimming"}:
+    if value in {"swim", "swimming", "openwater swimming"}:
         return "swim"
-    if value in {"run", "running"}:
+    if value in {"run", "running", "trail running", "track running", "treadmill", "vertical run"}:
         return "run"
-    if value in {"ride", "bicycle", "cycling"}:
+    if value in {
+        "ride",
+        "bicycle",
+        "cycling",
+        "indoor cycling",
+        "mountain biking",
+        "gravel cycling",
+        "e biking",
+        "e mtb",
+        "hand cycling",
+    }:
         return "ride"
-    if value in {"strength", "strength training", "weight training", "weights", "gym"}:
+    if value in {
+        "strength",
+        "strength training",
+        "weight training",
+        "weights",
+        "gym",
+        "outdoor gym",
+        "crossfit",
+        "kettlebell",
+        "calisthenics",
+    }:
         return "strength"
     return value or "unknown"
 
