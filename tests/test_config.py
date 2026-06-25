@@ -68,6 +68,14 @@ days = 21
             with self.assertRaisesRegex(SystemExit, "valid IANA timezone"):
                 load_config(config_path)
 
+    def test_rejects_malformed_timezone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text('[app]\ntimezone = "/etc/passwd"\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(SystemExit, "valid IANA timezone"):
+                load_config(config_path)
+
     def test_loads_enabled_suunto_command_and_sync_window(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

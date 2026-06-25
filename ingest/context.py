@@ -463,13 +463,14 @@ def render_daily_context(
     )
     state = DailyState(
         target_date=target_date,
-        activities=_normalize_withings_activities(activities, local_timezone),
+        activities=_prefer_suunto_activities(
+            _normalize_activities(activities, local_timezone)
+        ),
         measures=measures,
         withings_activity_summaries=withings_activity_summaries,
         historical_withings_activity_summaries=historical_withings_activity_summaries,
-        historical_activities=_normalize_withings_activities(
-            historical_activities,
-            local_timezone,
+        historical_activities=_prefer_suunto_activities(
+            _normalize_activities(historical_activities, local_timezone)
         ),
         historical_measures=historical_measures,
         hevy_sets=hevy_sets or [],
@@ -867,7 +868,7 @@ def _activity_metric_parts(activity: NormalizedActivity) -> list[str]:
     if activity.energy_kcal is not None:
         parts.append(f"{activity.energy_kcal:.0f} kcal")
     if activity.avg_hr is not None and activity.max_hr is not None:
-        parts.append(f"HR {activity.avg_hr:.0f}–{activity.max_hr:.0f}")
+        parts.append(f"HR {activity.avg_hr:.0f}-{activity.max_hr:.0f}")
     elif activity.avg_hr is not None:
         parts.append(f"HR avg {activity.avg_hr:.0f}")
     elif activity.max_hr is not None:
@@ -2090,6 +2091,24 @@ def _normalize_withings_activities(
     local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
 ) -> list[NormalizedActivity]:
     return [normalize_withings_activity(activity, local_timezone) for activity in activities]
+
+
+def _normalize_activities(
+    activities: list[dict[str, str]],
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[NormalizedActivity]:
+    normalizers = {
+        "hevy": normalize_hevy_activity,
+        "suunto": normalize_suunto_activity,
+        "withings": normalize_withings_activity,
+    }
+    return [
+        normalizers.get(
+            (activity.get("source") or "withings").strip().lower(),
+            normalize_withings_activity,
+        )(activity, local_timezone)
+        for activity in activities
+    ]
 
 
 def _normalize_hevy_activities(

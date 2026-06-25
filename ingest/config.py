@@ -173,7 +173,7 @@ def _load_timezone(data: dict[str, Any]) -> ZoneInfo:
     name = str(app.get("timezone") or "Asia/Tokyo").strip()
     try:
         return ZoneInfo(name)
-    except ZoneInfoNotFoundError as exc:
+    except (ValueError, ZoneInfoNotFoundError) as exc:
         raise SystemExit(f"app.timezone is not a valid IANA timezone: {name}") from exc
 
 

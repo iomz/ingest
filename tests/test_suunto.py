@@ -13,11 +13,51 @@ import anyio
 from rich.console import Console
 
 from ingest.config import load_config
-from ingest.context import build_daily_state, generate_daily_context, render_daily_terminal_context
+from ingest.context import (
+    build_daily_state,
+    generate_daily_context,
+    render_daily_context,
+    render_daily_terminal_context,
+)
 from ingest.sources import suunto
 
 
 class SuuntoSourceTest(unittest.TestCase):
+    def test_direct_context_render_preserves_suunto_source_and_precedence(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 24),
+            [
+                {
+                    "source": "withings",
+                    "source_id": "mirror",
+                    "start_time": "2026-06-24T14:14:21",
+                    "duration_min": "140.13",
+                    "distance_km": "5.20",
+                    "activity_type": "walk",
+                    "raw_type": "walk",
+                    "name": "Imported Walk",
+                },
+                {
+                    "source": "suunto",
+                    "source_id": "suunto-walk",
+                    "start_time": "2026-06-24T05:14:21+00:00",
+                    "duration_min": "68.69",
+                    "distance_km": "5.20",
+                    "activity_type": "walk",
+                    "raw_type": "WALKING",
+                    "name": "Walking",
+                    "tss_score": "46",
+                    "tss_method": "HR",
+                },
+            ],
+        )
+
+        self.assertIn("| Load | TSS 46.0", content)
+        self.assertIn("| TSS | 46.0 TSS |", content)
+        self.assertIn("- Workout source: Suunto", content)
+        self.assertIn("- Activity count: 1 primary", content)
+        self.assertNotIn("Imported Walk", content)
+
     def test_sync_invokes_configured_command_and_merges_workout_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -336,7 +376,7 @@ command = "{command_path}"
                 self.assertNotIn(wording, content)
             self.assertIn(
                 "WALKING: Walking (2.50 km, 30 min, 3,000 steps, 200 kcal, "
-                "HR 100–130, TSS(hr) 12.5)",
+                "HR 100-130, TSS(hr) 12.5)",
                 content,
             )
             self.assertIn(

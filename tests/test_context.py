@@ -492,7 +492,7 @@ class ContextTest(unittest.TestCase):
         self.assertIn("| Estimated deficit | 300 kcal/day | 270 kcal/day | 155 kcal/day | Above 30-day average |", content)
         self.assertIn("Estimated energy deficit is 300 kcal/day.", content)
 
-    def test_context_counts_withings_activities(self) -> None:
+    def test_context_deduplicates_overlapping_withings_activities(self) -> None:
         content = render_daily_context(
             date(2026, 5, 29),
             [
@@ -518,9 +518,9 @@ class ContextTest(unittest.TestCase):
         )
 
         self.assertIn("- Workout source: Withings", content)
-        self.assertIn("- Activity count: 2 primary", content)
+        self.assertIn("- Activity count: 1 primary", content)
         self.assertIn("Outdoor Walk", content)
-        self.assertIn("Duplicate Walk", content)
+        self.assertNotIn("Duplicate Walk", content)
 
     def test_context_reports_swimming_separately(self) -> None:
         content = render_daily_context(
