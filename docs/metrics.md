@@ -100,9 +100,16 @@ trailing 30 days. The first available observation is marked as first recorded;
 other sparse histories are marked as baseline forming. Weight, steps, and
 estimated-deficit trends retain their daily or rolling-average units.
 
-TSS is activity-agnostic and appears under Training Load, not under primary
-activity type. Report-date and rolling values sum TSS from all deduplicated
-Suunto workouts. TSS uses same weekly columns. Fewer than three TSS-bearing
-workouts show `Baseline forming`; fewer than 42 days of available TSS history
-show `Training load history limited`. Percentage direction appears only after
-both checks pass.
+Performance rows use distance-weighted aggregation: duration and distance are
+summed before pace or speed is calculated. Walking and running use `min/km`,
+swimming uses `min/100m`, and cycling uses `km/h`. Rows require positive
+distance and duration; Withings swimming distance remains excluded. Fewer than
+three valid sessions show `Baseline forming`. Pace direction treats lower as
+faster, while cycling speed treats higher as faster.
+
+TSS is activity-agnostic and appears with distance and duration under Workout,
+not under primary activity type. Report-date and rolling values sum TSS from
+all deduplicated Suunto workouts. TSS uses same weekly columns. Fewer than
+three TSS-bearing workouts show `Baseline forming`; fewer than 42 days of
+available TSS history show `Training load history limited`. Percentage
+direction appears only after both checks pass.

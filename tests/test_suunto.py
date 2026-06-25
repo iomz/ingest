@@ -455,7 +455,12 @@ command = "{command_path}"
                 "Baseline forming |",
                 content,
             )
-            self.assertIn("### Training Load", content)
+            self.assertIn("### Workout", content)
+            self.assertNotIn("### Activity", content)
+            self.assertNotIn("#### Volume", content)
+            self.assertNotIn("### Training Load", content)
+            self.assertIn("### Performance", content)
+            self.assertIn("### Body", content)
             self.assertNotIn("Walking TSS", content)
             self.assertNotIn("+1244%", content)
             self.assertIn("- Workout source: Suunto", content)
@@ -517,6 +522,11 @@ command = "{command_path}"
 
             self.assertIn("| Movement | 46 min swim · steps unavailable |", content)
             self.assertIn("Movement  46 min swim / steps unavailable", terminal_output.getvalue())
+            self.assertIn("Workout", terminal_output.getvalue())
+            self.assertIn("Performance", terminal_output.getvalue())
+            self.assertIn("Body", terminal_output.getvalue())
+            self.assertNotIn("Training Load", terminal_output.getvalue())
+            self.assertNotIn("Volume", terminal_output.getvalue())
             self.assertIn(
                 "| Swimming distance | 1.50 km | 1.50 km/week | 0.35 km/week | "
                 "First recorded swim |",
@@ -528,11 +538,30 @@ command = "{command_path}"
                 content,
             )
             self.assertIn(
+                "| Swimming pace | 3:04 min/100m | 3:04 min/100m | "
+                "3:04 min/100m | Baseline forming |",
+                content,
+            )
+            self.assertIn(
+                "Swimming pace baseline is still forming.",
+                content,
+            )
+            self.assertIn(
                 "| TSS | 40.7 TSS | 60.7 TSS/week | 14.2 TSS/week | "
                 "Training load history limited |",
                 content,
             )
-            self.assertIn("### Training Load", content)
+            trends = content.split("## Trends", 1)[1].split("\n## ", 1)[0]
+            self.assertIn("### Workout", trends)
+            self.assertIn("| Swimming distance |", trends)
+            self.assertIn("| Swimming duration |", trends)
+            self.assertIn("| TSS |", trends)
+            self.assertIn("### Performance", trends)
+            self.assertIn("| Swimming pace |", trends)
+            self.assertIn("### Body", trends)
+            self.assertNotIn("### Activity", trends)
+            self.assertNotIn("#### Volume", trends)
+            self.assertNotIn("### Training Load", trends)
             self.assertIn("| Load | TSS 40.7", content)
             self.assertNotIn("Swimming TSS", content)
             self.assertNotIn("Running TSS", content)
