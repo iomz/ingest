@@ -233,7 +233,7 @@ def _print_daily_context(config: AppConfig, target: date) -> int:
 
 
 def _print_daily_terminal_context(config: AppConfig, target: date) -> int:
-    render_daily_terminal_context(build_daily_state(config, target))
+    render_daily_terminal_context(build_daily_state(config, target), ui=config.ui)
     return 0
 
 

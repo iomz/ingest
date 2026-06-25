@@ -50,6 +50,44 @@ days = 21
             self.assertEqual(config.suunto.workouts_csv, root / "app-data/suunto/workouts.csv")
             self.assertEqual(config.suunto.raw_dir, root / "app-data/suunto/raw")
             self.assertEqual(config.suunto.days, 30)
+            self.assertEqual(config.ui.theme, "default")
+            self.assertEqual(config.ui.body_weight_goal, "maintenance")
+
+    def test_loads_ui_theme_and_body_weight_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text(
+                """
+[ui]
+theme = "colorful"
+body_weight_goal = "loss"
+""".strip(),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertEqual(config.ui.theme, "colorful")
+            self.assertEqual(config.ui.body_weight_goal, "loss")
+
+    def test_rejects_unknown_ui_theme(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text('[ui]\ntheme = "rainbow"\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(SystemExit, "ui.theme"):
+                load_config(config_path)
+
+    def test_rejects_unknown_body_weight_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text(
+                '[ui]\nbody_weight_goal = "cut"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(SystemExit, "ui.body_weight_goal"):
+                load_config(config_path)
 
     def test_loads_explicit_timezone(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

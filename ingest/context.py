@@ -19,7 +19,8 @@ from ingest.activities import (
     normalize_withings_activity,
 )
 from ingest.app_data import write_text_file
-from ingest.config import AppConfig
+from ingest.config import AppConfig, UIConfig
+from ingest.ui import DEFAULT_THEME, TerminalTheme, terminal_theme
 
 
 @dataclass(frozen=True)
@@ -93,12 +94,18 @@ def generate_today_context(config: AppConfig, target_date: date | None = None) -
     return generate_daily_context(config, target_date)
 
 
-def render_daily_terminal_context(state: DailyState, console: Any | None = None) -> None:
+def render_daily_terminal_context(
+    state: DailyState,
+    console: Any | None = None,
+    ui: UIConfig | None = None,
+) -> None:
     from rich.console import Console
     from rich.table import Table
     from rich.text import Text
 
     console = console or Console()
+    ui = ui or UIConfig(theme="default", body_weight_goal="maintenance")
+    theme = terminal_theme(ui.theme)
     target_date = state.target_date
     activities = state.activities
     withings_steps = _withings_step_count(state.withings_activity_summaries)
@@ -148,8 +155,13 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         target_date,
     )
 
-    console.print(Text(f"Physical Context — {target_date.isoformat()}", style="bold"))
-    _render_section_title(console, "Daily Snapshot")
+    console.print(
+        Text(
+            f"Physical Context — {target_date.isoformat()}",
+            style=theme.style("title"),
+        )
+    )
+    _render_section_title(console, "Daily Snapshot", theme)
     _render_kv_block(
         console,
         [
@@ -177,15 +189,16 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
             ("Body", _snapshot_body_status(weight_metrics, separator=" / ")),
         ],
         indent=2,
+        theme=theme,
     )
 
-    _render_section_title(console, "Trends")
+    _render_section_title(console, "Trends", theme)
     workout_trends = [
         *activity_trends,
         *([training_load_trend] if training_load_trend is not None else []),
     ]
     if workout_trends:
-        _render_subsection_title(console, "Workout")
+        _render_subsection_title(console, "Workout", theme, role="trend_workout")
         workout_table = Table(
             box=None,
             show_edge=False,
@@ -196,22 +209,42 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         for column in ["  Metric", "Today", "7-day total", "30-day weekly avg", "Direction"]:
             workout_table.add_column(
                 column,
-                style="bold white" if column.strip() == "Metric" else "",
+                style=theme.style("metric_label") if column.strip() == "Metric" else "",
                 no_wrap=True,
             )
         for metric in workout_trends:
             workout_table.add_row(
-                _styled_terminal_value(f"  {metric.label}", label="Metric"),
-                _styled_terminal_value(_format_activity_trend_value(metric.today, metric.unit)),
-                _styled_terminal_value(_format_activity_trend_total(metric.total_7d, metric.unit)),
+                _styled_terminal_value(f"  {metric.label}", label="Metric", theme=theme),
                 _styled_terminal_value(
-                    _format_activity_trend_weekly_average(metric.weekly_avg_30d, metric.unit)
+                    _format_activity_trend_value(metric.today, metric.unit),
+                    theme=theme,
                 ),
-                _styled_terminal_value(metric.direction),
+                _styled_terminal_value(
+                    _format_activity_trend_total(metric.total_7d, metric.unit),
+                    theme=theme,
+                ),
+                _styled_terminal_value(
+                    _format_activity_trend_weekly_average(metric.weekly_avg_30d, metric.unit),
+                    theme=theme,
+                ),
+                _styled_terminal_value(
+                    metric.direction,
+                    theme=theme,
+                    semantic_role=_trend_direction_role(
+                        metric.label,
+                        metric.direction,
+                        body_weight_goal=ui.body_weight_goal,
+                    ),
+                ),
             )
         console.print(workout_table)
     if performance_trends:
-        _render_subsection_title(console, "Performance")
+        _render_subsection_title(
+            console,
+            "Performance",
+            theme,
+            role="trend_performance",
+        )
         performance_table = Table(
             box=None,
             show_edge=False,
@@ -222,72 +255,120 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         for column in ["  Metric", "Today", "7-day avg", "30-day avg", "Direction"]:
             performance_table.add_column(
                 column,
-                style="bold white" if column.strip() == "Metric" else "",
+                style=theme.style("metric_label") if column.strip() == "Metric" else "",
                 no_wrap=True,
             )
         for metric in performance_trends:
             performance_table.add_row(
-                _styled_terminal_value(f"  {metric.label}", label="Metric"),
                 _styled_terminal_value(
-                    _format_performance_trend_value(metric.today, metric.unit)
+                    f"  {metric.label}",
+                    label="Metric",
+                    theme=theme,
                 ),
                 _styled_terminal_value(
-                    _format_performance_trend_value(metric.avg_7d, metric.unit)
+                    _format_performance_trend_value(metric.today, metric.unit),
+                    theme=theme,
                 ),
                 _styled_terminal_value(
-                    _format_performance_trend_value(metric.avg_30d, metric.unit)
+                    _format_performance_trend_value(metric.avg_7d, metric.unit),
+                    theme=theme,
                 ),
-                _styled_terminal_value(metric.direction),
+                _styled_terminal_value(
+                    _format_performance_trend_value(metric.avg_30d, metric.unit),
+                    theme=theme,
+                ),
+                _styled_terminal_value(
+                    metric.direction,
+                    theme=theme,
+                    semantic_role=_trend_direction_role(
+                        metric.label,
+                        metric.direction,
+                        body_weight_goal=ui.body_weight_goal,
+                    ),
+                ),
             )
         console.print(performance_table)
 
-    _render_subsection_title(console, "Body")
+    _render_subsection_title(console, "Body", theme, role="trend_body")
     body_trends = Table(box=None, show_edge=False, show_lines=False, expand=False, padding=(0, 2))
     for column in ["  Metric", "Today", "7-day avg", "30-day avg", "Direction"]:
         body_trends.add_column(
             column,
-            style="bold white" if column.strip() == "Metric" else "",
+            style=theme.style("metric_label") if column.strip() == "Metric" else "",
             no_wrap=True,
         )
     body_trends.add_row(
-        _styled_terminal_value("  Weight", label="Metric"),
-        _styled_terminal_value(weight_metrics["current_weight"]),
-        _styled_terminal_value(weight_metrics["avg_7d"]),
-        _styled_terminal_value(weight_metrics["avg_30d"]),
+        _styled_terminal_value("  Weight", label="Metric", theme=theme),
+        _styled_terminal_value(weight_metrics["current_weight"], theme=theme),
+        _styled_terminal_value(weight_metrics["avg_7d"], theme=theme),
+        _styled_terminal_value(weight_metrics["avg_30d"], theme=theme),
         _styled_terminal_value(
             _terminal_trend_direction(
                 _weight_value(weight_metrics["current_weight"]),
                 _weight_value(weight_metrics["avg_7d"]),
                 _weight_value(weight_metrics["avg_30d"]),
-            )
+            ),
+            theme=theme,
+            semantic_role=_trend_direction_role(
+                "Weight",
+                _terminal_trend_direction(
+                    _weight_value(weight_metrics["current_weight"]),
+                    _weight_value(weight_metrics["avg_7d"]),
+                    _weight_value(weight_metrics["avg_30d"]),
+                ),
+                body_weight_goal=ui.body_weight_goal,
+                today=_weight_value(weight_metrics["current_weight"]),
+                avg_7d=_weight_value(weight_metrics["avg_7d"]),
+                avg_30d=_weight_value(weight_metrics["avg_30d"]),
+            ),
         ),
     )
     if estimated_deficit_metrics is not None:
         body_trends.add_row(
-            _styled_terminal_value("  Estimated deficit", label="Metric"),
-            _styled_terminal_value(_format_estimated_deficit(estimated_deficit_metrics.today)),
-            _styled_terminal_value(_format_average_estimated_deficit(estimated_deficit_metrics.avg_7d)),
-            _styled_terminal_value(_format_average_estimated_deficit(estimated_deficit_metrics.avg_30d)),
+            _styled_terminal_value("  Estimated deficit", label="Metric", theme=theme),
+            _styled_terminal_value(
+                _format_estimated_deficit(estimated_deficit_metrics.today),
+                theme=theme,
+            ),
+            _styled_terminal_value(
+                _format_average_estimated_deficit(estimated_deficit_metrics.avg_7d),
+                theme=theme,
+            ),
+            _styled_terminal_value(
+                _format_average_estimated_deficit(estimated_deficit_metrics.avg_30d),
+                theme=theme,
+            ),
             _styled_terminal_value(
                 _terminal_trend_direction(
                     estimated_deficit_metrics.today,
                     estimated_deficit_metrics.avg_7d,
                     estimated_deficit_metrics.avg_30d,
-                )
+                ),
+                theme=theme,
+                semantic_role=_trend_direction_role(
+                    "Estimated deficit",
+                    _terminal_trend_direction(
+                        estimated_deficit_metrics.today,
+                        estimated_deficit_metrics.avg_7d,
+                        estimated_deficit_metrics.avg_30d,
+                    ),
+                    body_weight_goal=ui.body_weight_goal,
+                    today=estimated_deficit_metrics.today,
+                ),
             ),
         )
     console.print(body_trends)
 
     body_rows = _terminal_body_kv_rows(state.measures, state.historical_measures, target_date)
     if body_rows:
-        _render_section_title(console, "Body")
-        _render_kv_block(console, body_rows, indent=2)
+        _render_section_title(console, "Body", theme)
+        _render_kv_block(console, body_rows, indent=2, theme=theme)
 
     if activities:
-        _render_section_title(console, "Activities")
-        _render_terminal_activity_sections(console, activities, state.hevy_sets)
+        _render_section_title(console, "Activities", theme)
+        _render_terminal_activity_sections(console, activities, state.hevy_sets, theme)
 
-    _render_section_title(console, "Data Coverage")
+    _render_section_title(console, "Data Coverage", theme)
     _render_kv_block(
         console,
         _terminal_data_coverage_rows(
@@ -297,9 +378,10 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
             training_load_metrics,
         ),
         indent=2,
+        theme=theme,
     )
 
-    _render_section_title(console, "Machine Handoff")
+    _render_section_title(console, "Machine Handoff", theme)
     _render_wrapped_paragraph(
         console,
         _ai_handoff(
@@ -326,6 +408,7 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
             if estimated_deficit_metrics is not None
             else None,
         ),
+        theme=theme,
     )
 
 
@@ -909,17 +992,43 @@ def _activity_metric_parts(activity: NormalizedActivity) -> list[str]:
     return parts
 
 
-def _render_section_title(console: Any, title: str) -> None:
+SECTION_THEME_ROLES = {
+    "Daily Snapshot": "section_daily_snapshot",
+    "Trends": "section_trends",
+    "Body": "section_body",
+    "Activities": "section_activities",
+    "Data Coverage": "section_data_coverage",
+    "Machine Handoff": "section_machine_handoff",
+}
+
+
+def _render_section_title(
+    console: Any,
+    title: str,
+    theme: TerminalTheme = DEFAULT_THEME,
+) -> None:
     console.print()
-    console.print(title, style="bold cyan")
+    console.print(title, style=theme.style(SECTION_THEME_ROLES[title]))
 
 
-def _render_subsection_title(console: Any, title: str) -> None:
+def _render_subsection_title(
+    console: Any,
+    title: str,
+    theme: TerminalTheme = DEFAULT_THEME,
+    *,
+    role: str = "subsection",
+) -> None:
     console.print()
-    console.print(f"  {title}", style="bold")
+    console.print(f"  {title}", style=theme.style(role))
 
 
-def _render_kv_block(console: Any, rows: list[tuple[str, str]], *, indent: int = 0) -> None:
+def _render_kv_block(
+    console: Any,
+    rows: list[tuple[str, str]],
+    *,
+    indent: int = 0,
+    theme: TerminalTheme = DEFAULT_THEME,
+) -> None:
     if not rows:
         return
     label_width = max(len(label) for label, _ in rows)
@@ -927,40 +1036,78 @@ def _render_kv_block(console: Any, rows: list[tuple[str, str]], *, indent: int =
     for label, value in rows:
         value_width = max(console.width - indent - label_width - 2, 20)
         wrapped_value = textwrap.fill(str(value), width=value_width).splitlines() or [""]
-        line = _styled_terminal_line(f"{prefix}{label:<{label_width}}  ", wrapped_value[0], label=label)
+        line = _styled_terminal_line(
+            f"{prefix}{label:<{label_width}}  ",
+            wrapped_value[0],
+            label=label,
+            theme=theme,
+        )
         console.print(line)
         continuation_prefix = f"{prefix}{'':<{label_width}}  "
         for line in wrapped_value[1:]:
-            console.print(_styled_terminal_line(continuation_prefix, line, label=label))
+            console.print(
+                _styled_terminal_line(
+                    continuation_prefix,
+                    line,
+                    label=label,
+                    theme=theme,
+                )
+            )
 
 
-def _styled_terminal_line(prefix: str, value: str, *, label: str = "") -> Any:
+def _styled_terminal_line(
+    prefix: str,
+    value: str,
+    *,
+    label: str = "",
+    theme: TerminalTheme = DEFAULT_THEME,
+) -> Any:
     from rich.text import Text
 
-    text = Text(prefix, style="bold white")
-    text.append(_styled_terminal_value(value, label=label))
+    text = Text(prefix, style=theme.style("label"))
+    text.append(_styled_terminal_value(value, label=label, theme=theme))
     return text
 
 
-def _styled_terminal_value(value: str, *, label: str = "") -> Any:
+def _styled_terminal_value(
+    value: str,
+    *,
+    label: str = "",
+    theme: TerminalTheme = DEFAULT_THEME,
+    semantic_role: str | None = None,
+) -> Any:
     from rich.text import Text
 
     text = Text(str(value))
-    plain = text.plain
-    if plain == "None":
-        text.stylize("dim italic")
-        return text
     if label == "Metric":
-        text.stylize("bold white")
+        text.stylize(theme.style("metric_label"))
         return text
 
-    _stylize_matches(text, r"\b\d[\d,]*(?:\.\d+)?(?:%| kg| km| min| steps|/day)?\b", "cyan")
-    _stylize_matches(text, r"\([+-]?\d+%\)", "cyan")
-    _stylize_matches(text, r"\b(Good|Low)\b", "green")
-    _stylize_matches(text, r"\bPoor\b", "bold red")
-    _stylize_matches(text, r"\bNear \d+d avg\b", "green")
-    _stylize_matches(text, r"\b(Above|Below) \d+d avg\b", "yellow")
-    _stylize_matches(text, r"\bNo baseline\b", "dim")
+    _stylize_matches(
+        text,
+        r"\b\d[\d,]*(?:\.\d+)?(?: min/100m| min/km| km/h| steps| TSS| kcal|/day| kg| km| min|%)?\b",
+        theme.style("primary_value"),
+    )
+    _stylize_matches(text, r"\([+-]?\d+%\)", theme.style("primary_value"))
+    _stylize_matches(text, r"\b(Good|Low)\b", theme.style("positive"))
+    _stylize_matches(text, r"\bPoor\b", theme.style("negative"))
+    _stylize_matches(
+        text,
+        r"(?i)\btraining load history limited\b|\bwarming\s+up\b|\blimited\b",
+        theme.style("limited_history"),
+    )
+    _stylize_matches(
+        text,
+        r"(?i)\bbaseline(?:\s+is\s+still)?\s+forming\b",
+        theme.style("baseline_forming"),
+    )
+    _stylize_matches(
+        text,
+        r"(?i)(?:\bNone\b|\bunavailable\b|\bunknown\b|\bNo baseline\b)",
+        theme.style("missing"),
+    )
+    if semantic_role is not None:
+        text.stylize(theme.style(semantic_role))
     return text
 
 
@@ -969,7 +1116,14 @@ def _stylize_matches(text: Any, pattern: str, style: str) -> None:
         text.stylize(style, match.start(), match.end())
 
 
-def _render_wrapped_paragraph(console: Any, text: str, *, indent: int = 2, max_width: int = 88) -> None:
+def _render_wrapped_paragraph(
+    console: Any,
+    text: str,
+    *,
+    indent: int = 2,
+    max_width: int = 88,
+    theme: TerminalTheme = DEFAULT_THEME,
+) -> None:
     detected_width = console.size.width or shutil.get_terminal_size((100, 24)).columns
     terminal_width = min(detected_width, max_width)
     available_width = max(40, terminal_width - indent)
@@ -982,13 +1136,17 @@ def _render_wrapped_paragraph(console: Any, text: str, *, indent: int = 2, max_w
         break_long_words=False,
         break_on_hyphens=False,
     )
-    console.print(wrapped, overflow="fold", crop=False, soft_wrap=False)
+    styled = _styled_terminal_value(wrapped, theme=theme)
+    _stylize_matches(styled, r"(?i)\bfaster than\b[^.]*", theme.style("positive"))
+    _stylize_matches(styled, r"(?i)\bslower than\b[^.]*", theme.style("warning"))
+    console.print(styled, overflow="fold", crop=False, soft_wrap=False)
 
 
 def _render_terminal_activity_sections(
     console: Any,
     activities: list[NormalizedActivity],
     hevy_sets: list[dict[str, str]],
+    theme: TerminalTheme = DEFAULT_THEME,
 ) -> None:
     walking_activities = [activity for activity in activities if _is_walking_activity(activity)]
     swimming_activities = [activity for activity in activities if activity.activity_type == "swim"]
@@ -1000,17 +1158,27 @@ def _render_terminal_activity_sections(
     ]
 
     if walking_activities:
-        _render_subsection_title(console, "Walking")
-        _render_lines(console, [_terminal_distance_activity(activity) for activity in walking_activities], indent=4)
+        _render_subsection_title(console, "Walking", theme)
+        _render_lines(
+            console,
+            [_terminal_distance_activity(activity, theme) for activity in walking_activities],
+            indent=4,
+            theme=theme,
+        )
 
     if swimming_activities:
-        _render_subsection_title(console, "Swimming")
-        _render_lines(console, [_terminal_duration_activity(activity) for activity in swimming_activities], indent=4)
+        _render_subsection_title(console, "Swimming", theme)
+        _render_lines(
+            console,
+            [_terminal_duration_activity(activity, theme) for activity in swimming_activities],
+            indent=4,
+            theme=theme,
+        )
 
     if workout_activities:
-        _render_subsection_title(console, "Workout")
+        _render_subsection_title(console, "Workout", theme)
         for activity in workout_activities:
-            console.print(_terminal_workout_header(activity))
+            console.print(_terminal_workout_header(activity, theme))
             workout_sets = [
                 set_row
                 for set_row in hevy_sets
@@ -1022,15 +1190,32 @@ def _render_terminal_activity_sections(
                     console,
                     [("Sets", str(len(workout_sets))), ("Volume", _format_terminal_volume(total_volume_kg))],
                     indent=4,
+                    theme=theme,
                 )
-                _render_lines(console, _terminal_exercise_summaries(workout_sets), indent=4)
+                _render_lines(
+                    console,
+                    _terminal_exercise_summaries(workout_sets),
+                    indent=4,
+                    theme=theme,
+                )
 
     if other_activities:
-        _render_subsection_title(console, "Other")
-        _render_lines(console, [_terminal_distance_activity(activity) for activity in other_activities], indent=4)
+        _render_subsection_title(console, "Other", theme)
+        _render_lines(
+            console,
+            [_terminal_distance_activity(activity, theme) for activity in other_activities],
+            indent=4,
+            theme=theme,
+        )
 
 
-def _render_lines(console: Any, items: list[Any], *, indent: int = 0) -> None:
+def _render_lines(
+    console: Any,
+    items: list[Any],
+    *,
+    indent: int = 0,
+    theme: TerminalTheme = DEFAULT_THEME,
+) -> None:
     prefix = " " * indent
     for item in items:
         if hasattr(item, "plain"):
@@ -1040,50 +1225,72 @@ def _render_lines(console: Any, items: list[Any], *, indent: int = 0) -> None:
             line.append(item)
             console.print(line)
         else:
-            console.print(_styled_terminal_line(prefix, str(item)))
+            console.print(_styled_terminal_line(prefix, str(item), theme=theme))
 
 
-def _terminal_distance_activity(activity: NormalizedActivity) -> Any:
+def _terminal_distance_activity(
+    activity: NormalizedActivity,
+    theme: TerminalTheme = DEFAULT_THEME,
+) -> Any:
     from rich.text import Text
 
-    text = Text(activity.raw_type or "Unknown", style="bold")
+    text = Text(activity.raw_type or "Unknown", style=theme.style("subsection"))
     text.append("  ")
-    text.append(_terminal_activity_source(activity), style="dim")
+    text.append(_terminal_activity_source(activity), style=theme.style("muted"))
     text.append(" / ")
-    text.append(_format_distance(activity.distance_km), style="cyan")
+    text.append(_format_distance(activity.distance_km), style=theme.style("primary_value"))
     text.append(" / ")
-    text.append(f"{activity.duration_min:.0f} min", style="cyan")
-    _append_terminal_activity_metrics(text, activity)
+    text.append(
+        f"{activity.duration_min:.0f} min",
+        style=theme.style("primary_value"),
+    )
+    _append_terminal_activity_metrics(text, activity, theme)
     return text
 
 
-def _terminal_duration_activity(activity: NormalizedActivity) -> Any:
+def _terminal_duration_activity(
+    activity: NormalizedActivity,
+    theme: TerminalTheme = DEFAULT_THEME,
+) -> Any:
     from rich.text import Text
 
-    text = Text(activity.raw_type or "Unknown", style="bold")
+    text = Text(activity.raw_type or "Unknown", style=theme.style("subsection"))
     text.append("  ")
-    text.append(_terminal_activity_source(activity), style="dim")
+    text.append(_terminal_activity_source(activity), style=theme.style("muted"))
     text.append(" / ")
-    text.append(f"{activity.duration_min:.0f} min", style="cyan")
-    _append_terminal_activity_metrics(text, activity)
+    text.append(
+        f"{activity.duration_min:.0f} min",
+        style=theme.style("primary_value"),
+    )
+    _append_terminal_activity_metrics(text, activity, theme)
     return text
 
 
-def _terminal_workout_header(activity: NormalizedActivity) -> Any:
+def _terminal_workout_header(
+    activity: NormalizedActivity,
+    theme: TerminalTheme = DEFAULT_THEME,
+) -> Any:
     from rich.text import Text
 
     text = Text("    ")
-    text.append(_display_activity_name(activity), style="bold")
+    text.append(_display_activity_name(activity), style=theme.style("subsection"))
     text.append(" / ")
-    text.append(f"{activity.duration_min:.0f} min", style="cyan")
-    _append_terminal_activity_metrics(text, activity)
+    text.append(
+        f"{activity.duration_min:.0f} min",
+        style=theme.style("primary_value"),
+    )
+    _append_terminal_activity_metrics(text, activity, theme)
     return text
 
 
-def _append_terminal_activity_metrics(text: Any, activity: NormalizedActivity) -> None:
+def _append_terminal_activity_metrics(
+    text: Any,
+    activity: NormalizedActivity,
+    theme: TerminalTheme = DEFAULT_THEME,
+) -> None:
     for metric in _activity_metric_parts(activity):
         text.append(" / ")
-        text.append(metric, style="cyan")
+        text.append(metric, style=theme.style("primary_value"))
 
 
 def _terminal_activity_source(activity: NormalizedActivity) -> str:
@@ -1150,6 +1357,61 @@ def _format_percent_diff(value: float) -> str:
     if rounded > 0:
         return f"+{rounded}%"
     return f"{rounded}%"
+
+
+def _weight_direction_role(
+    today: float | None,
+    avg_7d: float | None,
+    avg_30d: float | None,
+    goal: str,
+) -> str | None:
+    baseline = avg_30d if avg_30d not in {None, 0} else avg_7d
+    if goal == "maintenance" or today is None or baseline in {None, 0}:
+        return None
+    if math.isclose(today, baseline):
+        return None
+    decreasing = today < baseline
+    goal_aligned = decreasing if goal == "loss" else not decreasing
+    return "positive" if goal_aligned else "warning"
+
+
+def _trend_direction_role(
+    metric: str,
+    direction: str,
+    *,
+    body_weight_goal: str,
+    today: float | None = None,
+    avg_7d: float | None = None,
+    avg_30d: float | None = None,
+) -> str | None:
+    normalized = direction.lower()
+    if "baseline forming" in normalized:
+        return "baseline_forming"
+    if "limited" in normalized or "warming up" in normalized:
+        return "limited_history"
+    if any(word in normalized for word in ("no baseline", "unavailable", "unknown")):
+        return "missing"
+    if metric.endswith((" pace", " speed")):
+        if normalized.startswith("faster than"):
+            return "positive"
+        if normalized.startswith("slower than"):
+            return "warning"
+        return None
+    if metric == "Weight":
+        return _weight_direction_role(
+            today,
+            avg_7d,
+            avg_30d,
+            body_weight_goal,
+        )
+    if metric == "Estimated deficit":
+        if normalized.startswith("above"):
+            return "positive"
+        if normalized.startswith("below"):
+            return "warning"
+        if normalized.startswith("near") and today is not None:
+            return "positive" if today > 0 else "warning"
+    return None
 
 
 def _weight_value(value: str) -> float | None:
