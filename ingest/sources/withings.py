@@ -5,7 +5,9 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
+from ingest.activities import DEFAULT_TIMEZONE
 from ingest.app_data import write_csv_file, write_json_file
 from ingest.config import AppConfig, update_withings_tokens
 
@@ -73,7 +75,7 @@ IGNORED_WORKOUT_CATEGORIES = {16}
 
 
 def sync(config: AppConfig, *, end_date: date | None = None) -> list[Path]:
-    target_end_date = end_date or date.today()
+    target_end_date = end_date or datetime.now(config.timezone).date()
     start_date = _sync_cursor_date(config, target_end_date)
     if start_date > target_end_date:
         return []
@@ -88,7 +90,7 @@ def _sync_cursor_date(config: AppConfig, end_date: date) -> date:
 
 
 def backfill(config: AppConfig, *, start_date: date, end_date: date | None = None) -> list[Path]:
-    target_end_date = end_date or date.today()
+    target_end_date = end_date or datetime.now(config.timezone).date()
     if start_date > target_end_date:
         return []
     return sync_range(config, start_date, target_end_date, raw_name="body_measures_backfill.json")
@@ -113,10 +115,21 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
 
     with requests.Session() as session:
         access_token = get_access_token(session, config)
-        measures = fetch_body_measures_windowed(session, access_token, start_date=start_date, end_date=end_date)
+        measures = fetch_body_measures_windowed(
+            session,
+            access_token,
+            start_date=start_date,
+            end_date=end_date,
+            local_timezone=config.timezone,
+        )
         height = {"measuregrps": []}
         if not has_cached_height(config.withings.measures_csv):
-            height = fetch_latest_height(session, access_token, end_date=end_date)
+            height = fetch_latest_height(
+                session,
+                access_token,
+                end_date=end_date,
+                local_timezone=config.timezone,
+            )
         activity = fetch_activity_windowed(
             session,
             access_token,
@@ -219,6 +232,7 @@ def fetch_body_measures(
     start_date: date,
     end_date: date,
     meastypes: str = BODY_MEASURE_TYPE_IDS,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
 ) -> dict[str, Any]:
     try:
         response = session.post(
@@ -228,8 +242,8 @@ def fetch_body_measures(
                 "action": "getmeas",
                 "category": 1,
                 "meastypes": meastypes,
-                "startdate": _start_timestamp(start_date),
-                "enddate": _end_timestamp(end_date),
+                "startdate": _start_timestamp(start_date, local_timezone),
+                "enddate": _end_timestamp(end_date, local_timezone),
             },
             timeout=TIMEOUT_SECONDS,
         )
@@ -245,6 +259,7 @@ def fetch_body_measures_windowed(
     start_date: date,
     end_date: date,
     meastypes: str = BODY_MEASURE_TYPE_IDS,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
 ) -> dict[str, Any]:
     if start_date > end_date:
         raise SystemExit("Withings start date must be on or before end date.")
@@ -259,6 +274,7 @@ def fetch_body_measures_windowed(
             start_date=window_start,
             end_date=window_end,
             meastypes=meastypes,
+            local_timezone=local_timezone,
         )
         window_groups = body.get("measuregrps", [])
         if not isinstance(window_groups, list):
@@ -268,13 +284,20 @@ def fetch_body_measures_windowed(
     return {"measuregrps": measuregrps}
 
 
-def fetch_latest_height(session: Any, access_token: str, *, end_date: date) -> dict[str, Any]:
+def fetch_latest_height(
+    session: Any,
+    access_token: str,
+    *,
+    end_date: date,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> dict[str, Any]:
     body = fetch_body_measures_windowed(
         session,
         access_token,
         start_date=HEIGHT_LOOKBACK_START,
         end_date=end_date,
         meastypes=HEIGHT_MEASURE_TYPE_ID,
+        local_timezone=local_timezone,
     )
     measuregrps = body.get("measuregrps", [])
     if not isinstance(measuregrps, list):
@@ -470,7 +493,7 @@ def write_measures(
         raise SystemExit("Withings measure response did not contain measuregrps.")
 
     written_paths.append(write_json_file(config.withings.raw_dir / raw_name, body))
-    rows = normalize_measure_groups(measuregrps)
+    rows = normalize_measure_groups(measuregrps, config.timezone)
     if merge:
         rows = merge_measure_rows(read_measure_rows(config.withings.measures_csv), rows)
     written_paths.append(write_csv_file(config.withings.measures_csv, rows, MEASURE_FIELDS))
@@ -490,7 +513,7 @@ def write_workouts(
         raise SystemExit("Withings workouts response did not contain series.")
 
     written_paths.append(write_json_file(config.withings.raw_dir / raw_name, body))
-    rows = normalize_workouts(series)
+    rows = normalize_workouts(series, config.timezone)
     if merge:
         rows = merge_workout_rows(read_workout_rows(config.withings.workouts_csv), rows)
     written_paths.append(write_csv_file(config.withings.workouts_csv, rows, WORKOUT_FIELDS))
@@ -610,18 +633,29 @@ def merge_activity_rows(
     return sorted(rows_by_date.values(), key=lambda row: str(row.get("date", "")))
 
 
-def normalize_measure_groups(measuregrps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def normalize_measure_groups(
+    measuregrps: list[dict[str, Any]],
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for group in measuregrps:
         timestamp = _int_or_zero(group.get("date"))
-        local_datetime = datetime.fromtimestamp(timestamp).isoformat() if timestamp else ""
+        local_datetime = (
+            datetime.fromtimestamp(timestamp, tz=local_timezone).isoformat()
+            if timestamp
+            else ""
+        )
         for measure in group.get("measures", []):
             measure_type = _int_or_zero(measure.get("type"))
             type_name, unit_name = BODY_MEASURE_TYPES.get(measure_type, (f"type_{measure_type}", ""))
             rows.append(
                 {
                     "grpid": group.get("grpid", ""),
-                    "date": date.fromtimestamp(timestamp).isoformat() if timestamp else "",
+                    "date": (
+                        datetime.fromtimestamp(timestamp, tz=local_timezone).date().isoformat()
+                        if timestamp
+                        else ""
+                    ),
                     "datetime_local": local_datetime,
                     "type": measure_type,
                     "type_name": type_name,
@@ -645,7 +679,10 @@ def normalize_activity_summaries(activities: list[dict[str, Any]]) -> list[dict[
     return rows
 
 
-def normalize_workouts(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def normalize_workouts(
+    series: list[dict[str, Any]],
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for workout in series:
         start_timestamp = _int_or_zero(workout.get("startdate") or workout.get("date"))
@@ -660,8 +697,16 @@ def normalize_workouts(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "source": "withings",
                 "source_id": str(workout.get("id") or f"{start_timestamp}-{category}"),
-                "start_time": datetime.fromtimestamp(start_timestamp).isoformat() if start_timestamp else "",
-                "end_time": datetime.fromtimestamp(end_timestamp).isoformat() if end_timestamp else "",
+                "start_time": (
+                    datetime.fromtimestamp(start_timestamp, tz=local_timezone).isoformat()
+                    if start_timestamp
+                    else ""
+                ),
+                "end_time": (
+                    datetime.fromtimestamp(end_timestamp, tz=local_timezone).isoformat()
+                    if end_timestamp
+                    else ""
+                ),
                 "duration_min": _workout_duration_min(workout, data, start_timestamp, end_timestamp),
                 "distance_km": _workout_distance_km(data),
                 "step_count": str(_int_or_zero(data.get("steps"))),
@@ -718,12 +763,18 @@ def _withings_body(response: Any, prefix: str) -> dict[str, Any]:
     return body
 
 
-def _start_timestamp(value: date) -> int:
-    return int(datetime.combine(value, time.min).timestamp())
+def _start_timestamp(
+    value: date,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> int:
+    return int(datetime.combine(value, time.min, tzinfo=local_timezone).timestamp())
 
 
-def _end_timestamp(value: date) -> int:
-    return int(datetime.combine(value, time.max).timestamp())
+def _end_timestamp(
+    value: date,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> int:
+    return int(datetime.combine(value, time.max, tzinfo=local_timezone).timestamp())
 
 
 def _int_or_zero(value: Any) -> int:

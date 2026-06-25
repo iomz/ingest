@@ -5,6 +5,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import anyio
 
@@ -24,6 +25,13 @@ WORKOUT_FIELDS = [
     "raw_type",
     "name",
     "notes",
+    "energy_kcal",
+    "avg_hr",
+    "max_hr",
+    "tss_score",
+    "tss_method",
+    "intensity_factor",
+    "recovery_time_seconds",
 ]
 
 ACTIVITY_NAMES = {
@@ -58,9 +66,9 @@ def sync(config: AppConfig) -> list[Path]:
 
 
 async def sync_async(config: AppConfig, *, end_date: date | None = None) -> list[Path]:
-    cutoff = end_date or date.today()
+    cutoff = end_date or datetime.now(config.timezone).date()
     existing_rows = read_workout_rows(config.suunto.workouts_csv)
-    since = _sync_start_date(existing_rows, cutoff, config.suunto.days)
+    since = _sync_start_date(existing_rows, cutoff, config.suunto.days, config.timezone)
     workouts = await fetch_workouts(config.suunto, since)
     raw_path = write_json_file(config.suunto.raw_dir / "workouts_sync.json", workouts)
     normalized_rows = normalize_workouts(workouts)
@@ -122,6 +130,8 @@ def normalize_workouts(workouts: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         duration_seconds = _float_value(workout.get("totalTime"))
         raw_type = _activity_name(workout, source_id)
+        hrdata = _mapping(workout.get("hrdata"))
+        tss = _mapping(workout.get("tss"))
         rows.append(
             {
                 "source": "suunto",
@@ -135,6 +145,20 @@ def normalize_workouts(workouts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "raw_type": raw_type,
                 "name": raw_type.replace("_", " ").title(),
                 "notes": "",
+                "energy_kcal": _optional_number(workout.get("energyConsumption")),
+                "avg_hr": _first_optional_number(
+                    hrdata.get("workoutAvgHR"),
+                    hrdata.get("avg"),
+                ),
+                "max_hr": _first_optional_number(
+                    hrdata.get("workoutMaxHR"),
+                    hrdata.get("max"),
+                    hrdata.get("hrmax"),
+                ),
+                "tss_score": _optional_number(tss.get("trainingStressScore")),
+                "tss_method": _optional_text(tss.get("calculationMethod")),
+                "intensity_factor": _optional_number(tss.get("intensityFactor")),
+                "recovery_time_seconds": _optional_number(workout.get("recoveryTime")),
             }
         )
     return sorted(rows, key=lambda row: str(row["start_time"]))
@@ -147,9 +171,17 @@ def read_workout_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(csv_file))
 
 
-def _sync_start_date(rows: list[dict[str, str]], cutoff: date, fallback_days: int) -> date:
-    dates = [row.get("start_time", "")[:10] for row in rows]
-    valid_dates = [date.fromisoformat(value) for value in dates if _is_iso_date(value)]
+def _sync_start_date(
+    rows: list[dict[str, str]],
+    cutoff: date,
+    fallback_days: int,
+    local_timezone: ZoneInfo,
+) -> date:
+    valid_dates = [
+        parsed.astimezone(local_timezone).date()
+        for row in rows
+        if (parsed := _timestamp(row.get("start_time", ""))) is not None
+    ]
     return max(valid_dates) if valid_dates else cutoff - timedelta(days=fallback_days - 1)
 
 
@@ -176,6 +208,29 @@ def _optional_distance_km(value: Any) -> str:
     return f"{meters / 1000:.2f}" if meters > 0 else ""
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _optional_number(value: Any) -> str:
+    try:
+        return str(float(value)).rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _first_optional_number(*values: Any) -> str:
+    for value in values:
+        normalized = _optional_number(value)
+        if normalized:
+            return normalized
+    return ""
+
+
+def _optional_text(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
 def _activity_name(workout: dict[str, Any], source_id: str) -> str:
     activity_name = str(workout.get("activityName", "")).strip()
     if activity_name:
@@ -189,12 +244,16 @@ def _activity_name(workout: dict[str, Any], source_id: str) -> str:
     return ACTIVITY_NAMES.get(activity_id, f"activity_{activity_id}")
 
 
-def _is_iso_date(value: str) -> bool:
+def _timestamp(value: str) -> datetime | None:
+    if not value:
+        return None
     try:
-        date.fromisoformat(value)
-        return True
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return False
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def _float_value(value: Any) -> float:

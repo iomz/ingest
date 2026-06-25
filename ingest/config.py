@@ -8,6 +8,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ingest.app_data import default_config_path, resolve_data_dir
 
@@ -54,6 +55,7 @@ class AppConfig:
     data_dir: Path
     generated_dir: Path
     daily_context_path: Path
+    timezone: ZoneInfo
     withings: WithingsConfig
     hevy: HevyConfig
     suunto: SuuntoConfig
@@ -77,6 +79,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         raise SystemExit(f"Could not parse {config_path}: {exc}") from exc
 
     data_dir = _load_data_dir(data)
+    timezone = _load_timezone(data)
     generated_dir = _configured_data_path(data_dir, data.get("generated", {}), "generated.dir", Path("generated"))
     daily_context_path = generated_dir / "daily_context.md"
     withings = _load_withings_config(data, data_dir)
@@ -88,6 +91,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         data_dir=data_dir,
         generated_dir=generated_dir,
         daily_context_path=daily_context_path,
+        timezone=timezone,
         withings=withings,
         hevy=hevy,
         suunto=suunto,
@@ -162,6 +166,15 @@ def _load_data_dir(data: dict[str, Any]) -> Path:
     section = data.get("app") or data.get("data") or {}
     raw_path = str(section.get("data_dir") or section.get("dir") or "").strip()
     return resolve_data_dir(raw_path or None)
+
+
+def _load_timezone(data: dict[str, Any]) -> ZoneInfo:
+    app = data.get("app") or data.get("data") or {}
+    name = str(app.get("timezone") or "Asia/Tokyo").strip()
+    try:
+        return ZoneInfo(name)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise SystemExit(f"app.timezone is not a valid IANA timezone: {name}") from exc
 
 
 def _load_withings_config(data: dict[str, Any], data_dir: Path) -> WithingsConfig:

@@ -65,6 +65,21 @@ class HevySourceTest(unittest.TestCase):
         self.assertEqual(rows[0]["end_time"], "2026-06-05T15:25:00")
         self.assertEqual(rows[0]["duration_min"], "93.00")
 
+    def test_mixed_aware_and_naive_timestamps_use_zero_duration(self) -> None:
+        rows = hevy.normalize_workout_rows(
+            [
+                {
+                    "title": "Mixed timestamps",
+                    "start_time": "2026-06-05T13:52:00+00:00",
+                    "end_time": "2026-06-05T15:25:00",
+                    "exercise_title": "Bench Press",
+                    "set_index": "1",
+                }
+            ]
+        )
+
+        self.assertEqual(rows[0]["duration_min"], "0.00")
+
     def test_sync_exports_then_imports_workouts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

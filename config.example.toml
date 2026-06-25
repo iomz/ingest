@@ -1,6 +1,8 @@
 [app]
 # Optional. Defaults to ${XDG_DATA_HOME:-~/.local/share}/ingest.
 data_dir = ""
+# IANA timezone used for naive source timestamps and report date boundaries.
+timezone = "Asia/Tokyo"
 
 [withings]
 # Copy this file to your local config path and replace the placeholder values.

@@ -1,33 +1,14 @@
 # Metrics
 
-## Activity Level
+## Activity Sources
 
-Activity level uses explicit workouts plus estimated unlogged steps from the
-Withings daily step total.
+Withings remains authoritative for daily step totals and body metrics.
 
-- None: no workouts and no unlogged steps
-- Light: <=5 km and <=60 min
-- Moderate: <=12 km and <=120 min
-- High: more than 12 km or 120 min
-
-## Activity Score
-
-Activity Score uses non-swimming distance plus duration:
-
-`score = distance_km + duration_min / 12`
-
-When Withings daily steps are available, ingest subtracts steps already covered
-by logged walk/run workouts before adding step effort. Logged walk/run steps come
-from workout step counts when present; otherwise they are estimated from distance
-(1300 steps/km walking, 1200 steps/km running). Remaining daily steps are treated
-as walking-equivalent effort (1300 steps/km, 12 min/km). This keeps total daily
-steps represented while avoiding double-counting explicit walk/run workouts.
-
-## Recovery Compatibility
-
-- Good: None or Light
-- Acceptable: Moderate
-- Poor: High
+Suunto is authoritative for workout distance, duration, activity type, heart
+rate, TSS, and activity energy. Matching Withings activity rows
+are suppressed from Physical Context aggregation so mirrored Apple Health or
+Suunto workouts do not inflate movement totals or walking trends. Source CSVs
+remain unchanged.
 
 ## Walking Trend
 
@@ -52,7 +33,76 @@ Compare current 7-day average weight with the previous 7-day average.
 
 ## Data Coverage
 
-Data coverage describes the Withings activity records used for the generated context.
+Data coverage describes source roles used for generated context.
 
-- Sources: source names present.
-- Activities: count of activities for the target date.
+- Workout source: source names for primary workout records.
+- Step source: Withings when daily steps are available.
+- Body source: Withings when body measures are available.
+- Activity count: primary workout count after source precedence and deduplication.
+
+## Training Load
+
+Workout-level TSS and calculation methods follow Suunto's
+[Training Stress Score in Suunto app](https://www.suunto.com/sports/News-Articles-container-page/training-stress-score-in-suunto-app/)
+concepts. CTL, ATL, and TSB terminology follows Suunto's
+[training load guidance](https://www.suunto.com/sports/News-Articles-container-page/understand-and-manage-your-training-load-with-suunto/).
+
+ingest calculates transparent training-load values from daily total Suunto TSS:
+
+- `alpha = 1 - exp(-1 / time_constant)`
+- `EWMA_today = EWMA_previous + alpha * (daily_TSS - EWMA_previous)`
+- CTL uses a 42-day time constant.
+- ATL uses a 7-day time constant.
+- TSB is CTL minus ATL.
+- Missing days contribute TSS 0 so load decays on rest days.
+- Calculation starts from zero before the earliest locally available TSS date.
+
+Physical Context reports CTL, ATL, and TSB at end of report date, after that
+date's TSS has been applied. Values are intended to inform planning for
+following day. They are ingest-defined and are not guaranteed to match Suunto
+App internal values.
+
+History coverage is reported with training load:
+
+- fewer than 7 calendar days: ATL and TSB are warming up
+- 7 to fewer than 42 calendar days: CTL is warming up
+- 42 calendar days or more: training-load baseline is available
+
+Coverage counts calendar days from earliest available Suunto TSS date through
+report date, including zero-TSS rest days.
+
+TSB labels use Suunto-style zones:
+
+- below -30: Too high intensity
+- -30 to below -10: Fatigue / Improving fitness
+- -10 to below 15: Training balance
+- 15 or above: Losing fitness or recovering
+
+When fewer than 7 calendar days of TSS history are available, Physical Context
+shows `warming up` instead of a TSB zone in Daily Snapshot and Machine Handoff.
+After 7 days, TSB zones are shown while CTL may continue warming until day 42.
+
+Suunto `recoveryTime` remains preserved in normalized and raw source data but is
+not shown in Physical Context.
+
+## Activity Trends
+
+Activity trend rows follow report date's primary activity type, selected by
+greatest total duration. Walking, running, cycling, and swimming use same-type
+distance when available and duration. Other activity types fall back to workout
+duration. A non-walking workout day does not emit a zero walking-distance trend.
+
+Workout trend columns show the report date value, trailing 7-day total, and
+trailing 30-day total normalized to a weekly average. Non-activity days do not
+turn these metrics into per-day averages. Direction percentages are shown only
+when at least three same-activity sessions with that metric exist in the
+trailing 30 days. The first available observation is marked as first recorded;
+other sparse histories are marked as baseline forming. Weight, steps, and
+estimated-deficit trends retain their daily or rolling-average units.
+
+TSS is activity-agnostic and appears under Training Load, not under primary
+activity type. Report-date and rolling values sum TSS from all deduplicated
+Suunto workouts. TSS uses same weekly columns. Fewer than three TSS-bearing
+workouts show `Baseline forming`; fewer than 42 days of available TSS history
+show `Training load history limited`. Percentage direction appears only after
+both checks pass.
