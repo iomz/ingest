@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from ingest.activities import normalize_withings_activity
+from ingest.activities import normalize_suunto_activity, normalize_withings_activity
 from ingest.config import load_config
 from ingest.context import (
     DailyState,
@@ -16,6 +16,9 @@ from ingest.context import (
     render_daily_context,
     render_daily_terminal_context,
     withings_activities_for_date,
+    _training_load_metrics,
+    _training_load_history_label,
+    _tsb_label,
 )
 
 
@@ -50,6 +53,100 @@ class ContextTest(unittest.TestCase):
             "load score",
         ]:
             self.assertNotIn(wording, content)
+
+    def test_training_load_uses_report_date_end_state_and_rest_day_decay(self) -> None:
+        activity = normalize_suunto_activity(
+            {
+                "start_time": "2026-06-01T08:00:00+09:00",
+                "duration_min": "60",
+                "activity_type": "run",
+                "tss_score": "100",
+            }
+        )
+
+        after_training = _training_load_metrics([activity], date(2026, 6, 1))
+        after_one_rest_day = _training_load_metrics([activity], date(2026, 6, 2))
+        after_two_rest_days = _training_load_metrics([activity], date(2026, 6, 3))
+
+        self.assertIsNotNone(after_training)
+        self.assertIsNotNone(after_one_rest_day)
+        self.assertIsNotNone(after_two_rest_days)
+        assert after_training is not None
+        assert after_one_rest_day is not None
+        assert after_two_rest_days is not None
+        self.assertEqual(after_training.today_tss, 100.0)
+        self.assertAlmostEqual(after_training.ctl, 2.35, places=2)
+        self.assertAlmostEqual(after_training.atl, 13.31, places=2)
+        self.assertAlmostEqual(after_training.tsb, -10.96, places=2)
+        self.assertEqual(after_one_rest_day.today_tss, 0.0)
+        self.assertLess(after_one_rest_day.ctl, after_training.ctl)
+        self.assertLess(after_one_rest_day.atl, after_training.atl)
+        self.assertLess(after_two_rest_days.ctl, after_one_rest_day.ctl)
+        self.assertLess(after_two_rest_days.atl, after_one_rest_day.atl)
+
+    def test_training_load_ignores_workouts_without_tss(self) -> None:
+        missing_tss = normalize_suunto_activity(
+            {
+                "start_time": "2026-06-01T08:00:00+09:00",
+                "duration_min": "60",
+                "activity_type": "run",
+            }
+        )
+
+        self.assertIsNone(_training_load_metrics([missing_tss], date(2026, 6, 2)))
+
+    def test_tsb_labels_use_suunto_style_zones(self) -> None:
+        self.assertEqual(_tsb_label(-30.1), "Too high intensity")
+        self.assertEqual(_tsb_label(-30), "Fatigue / Improving fitness")
+        self.assertEqual(_tsb_label(-10), "Training balance")
+        self.assertEqual(_tsb_label(14.9), "Training balance")
+        self.assertEqual(_tsb_label(15), "Losing fitness or recovering")
+
+    def test_training_load_history_labels_use_calendar_span(self) -> None:
+        self.assertEqual(
+            _training_load_history_label(6),
+            "Training load history limited; ATL/TSB warming up",
+        )
+        self.assertEqual(
+            _training_load_history_label(7),
+            "Training load history limited; CTL warming up",
+        )
+        self.assertEqual(
+            _training_load_history_label(41),
+            "Training load history limited; CTL warming up",
+        )
+        self.assertEqual(
+            _training_load_history_label(42),
+            "Training load baseline available",
+        )
+
+        activity = normalize_suunto_activity(
+            {
+                "start_time": "2026-06-01T08:00:00+09:00",
+                "duration_min": "60",
+                "activity_type": "run",
+                "tss_score": "100",
+            }
+        )
+        six_days = _training_load_metrics([activity], date(2026, 6, 6))
+        seven_days = _training_load_metrics([activity], date(2026, 6, 7))
+        forty_two_days = _training_load_metrics([activity], date(2026, 7, 12))
+
+        assert six_days is not None
+        assert seven_days is not None
+        assert forty_two_days is not None
+        self.assertEqual(
+            six_days.history_label,
+            "Training load history limited; ATL/TSB warming up",
+        )
+        self.assertEqual(
+            seven_days.history_label,
+            "Training load history limited; CTL warming up",
+        )
+        self.assertEqual(
+            forty_two_days.history_label,
+            "Training load baseline available",
+        )
 
     def test_terminal_handoff_wraps_before_rich_printing(self) -> None:
         activity = normalize_withings_activity(
@@ -119,7 +216,7 @@ class ContextTest(unittest.TestCase):
         self.assertNotIn("| Activity |", content)
         self.assertNotIn("Activity score", content)
         self.assert_no_custom_recovery(content)
-        self.assertIn("| Movement | unavailable steps", content)
+        self.assertIn("| Movement | 20.50 km ride · steps unavailable |", content)
         self.assertNotIn("- Walking: 0.00 km / 0 min", content)
         self.assertIn("| Weight | 70.50 kg | 70.50 kg | 70.50 kg | Stable |", content)
         self.assertIn("## Machine Handoff", content)
@@ -195,7 +292,11 @@ class ContextTest(unittest.TestCase):
         self.assertNotIn("Activity score", content)
         self.assert_no_custom_recovery(content)
         self.assertIn("| Movement | unavailable steps · 4.00 km walk |", content)
-        self.assertIn("| Walking distance | 4.00 km | 0.57 km/day | 0.13 km/day | Above 30-day average |", content)
+        self.assertIn(
+            "| Walking distance | 4.00 km | 4.00 km/week | 0.93 km/week | "
+            "First recorded walk |",
+            content,
+        )
         self.assertIn("| Body | No Withings weight available · unknown |", content)
 
     def test_renders_moderate_derived_metrics(self) -> None:
@@ -243,6 +344,27 @@ class ContextTest(unittest.TestCase):
         self.assertNotIn("- Walking trend: Unknown", content)
         self.assertIn("No primary activities found for this date.", content)
 
+    def test_terminal_renders_without_activity_trends(self) -> None:
+        state = DailyState(
+            target_date=date(2026, 5, 29),
+            activities=[],
+            measures=[],
+            withings_activity_summaries=[],
+            historical_withings_activity_summaries=[],
+            historical_activities=[],
+            historical_measures=[],
+            hevy_sets=[],
+        )
+        output = io.StringIO()
+
+        render_daily_terminal_context(
+            state,
+            Console(file=output, width=140, color_system=None, force_terminal=False),
+        )
+
+        self.assertIn("Physical Context — 2026-05-29", output.getvalue())
+        self.assertNotIn("Activity\n", output.getvalue())
+
     def test_renders_walking_trend_from_historical_activities(self) -> None:
         historical_activities = [
             {"start_time": "2026-05-16T06:00:00Z", "activity_type": "Walk", "distance_km": "1.00", "duration_min": "12.00"},
@@ -267,9 +389,16 @@ class ContextTest(unittest.TestCase):
             historical_activities=historical_activities,
         )
 
-        self.assertIn("| Walking distance | 2.00 km | 2.00 km/day | 0.70 km/day | Above 30-day average |", content)
+        self.assertIn(
+            "| Walking distance | 2.00 km | 14.00 km/week | 4.90 km/week | "
+            "Above 30-day weekly average (+186%) |",
+            content,
+        )
         self.assertNotIn("Activity score", content)
-        self.assertIn("Walking trend is Increasing.", content)
+        self.assertIn(
+            "Walking distance is above 30-day weekly average (+186%).",
+            content,
+        )
 
     def test_renders_weight_trend_from_historical_measures(self) -> None:
         historical_measures = [
@@ -424,6 +553,27 @@ class ContextTest(unittest.TestCase):
         self.assertIn("- swim: Pool Swim (45 min)", content)
         self.assertNotIn("1.20 km", content)
 
+    def test_withings_swim_distance_stays_out_of_trends_and_handoff(self) -> None:
+        content = render_daily_context(
+            date(2026, 5, 29),
+            [
+                {
+                    "source_id": "swim",
+                    "start_time": "2026-05-29T12:00:00+00:00",
+                    "duration_min": "45",
+                    "distance_km": "1.20",
+                    "activity_type": "swim",
+                    "raw_type": "swim",
+                    "name": "Pool Swim",
+                },
+            ],
+        )
+
+        self.assertIn("| Swimming duration |", content)
+        self.assertNotIn("| Swimming distance |", content)
+        self.assertIn("Swimming included 45 min.", content)
+        self.assertNotIn("1.20 km", content)
+
     def test_context_reports_strength_training_separately(self) -> None:
         content = render_daily_context(
             date(2026, 6, 5),
@@ -540,7 +690,7 @@ class ContextTest(unittest.TestCase):
         )
 
         self.assert_no_custom_recovery(content)
-        self.assertIn("| Movement | unavailable steps · 20.00 km ride |", content)
+        self.assertIn("| Movement | 20.00 km ride · steps unavailable |", content)
         self.assertIn("| Strength | Push Day · 45 min · 20 sets · 10000 kg |", content)
         self.assertNotIn("walking + strength", content)
 
@@ -700,7 +850,11 @@ class ContextTest(unittest.TestCase):
             self.assertIn("- Body source: Withings", content)
             self.assertIn("- Activity count: 2 primary", content)
             self.assertIn("| Movement | 3,456 steps · 2.10 km walk |", content)
-            self.assertIn("| Walking distance | 2.10 km | 1.30 km/day | 0.30 km/day | Above 30-day average |", content)
+            self.assertIn(
+                "| Running distance | 5.00 km | 5.00 km/week | 1.17 km/week | "
+                "First recorded run |",
+                content,
+            )
             self.assertNotIn("withings:w0", content)
             self.assertIn("| Weight | 70.50 kg |", content)
             self.assertNotIn("71.00", content)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import re
 import shutil
 import textwrap
@@ -39,7 +40,27 @@ class SuuntoDailyMetrics:
     total_energy_kcal: float | None
     avg_hr: float | None
     max_hr: float | None
-    max_recovery_seconds: float | None
+
+
+@dataclass(frozen=True)
+class TrainingLoadMetrics:
+    today_tss: float
+    ctl: float
+    atl: float
+    tsb: float
+    tsb_label: str
+    history_days: int
+    history_label: str
+
+
+@dataclass(frozen=True)
+class ActivityTrendMetric:
+    label: str
+    today: float
+    total_7d: float
+    weekly_avg_30d: float
+    unit: str
+    direction: str
 
 
 @dataclass(frozen=True)
@@ -83,6 +104,11 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         for activity in activities
         if activity.activity_type == "swim"
     )
+    swimming_distance_km = sum(
+        activity.distance_km or 0.0
+        for activity in activities
+        if activity.activity_type == "swim" and activity.source == "suunto"
+    )
     strength_activities = [activity for activity in activities if activity.activity_type == "strength"]
     strength_duration_min = sum(activity.duration_min for activity in strength_activities)
     ride_distance_km = sum(
@@ -92,8 +118,20 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
     )
     weight_metrics = _weight_metrics(state.historical_measures, target_date)
     estimated_deficit_metrics = _estimated_deficit_metrics(state.historical_measures, target_date)
-    walking_metrics = _walking_metrics(state.historical_activities, target_date)
+    activity_trends = _activity_trend_metrics(
+        activities,
+        state.historical_activities,
+        target_date,
+    )
+    training_load_trend = _training_load_trend_metric(
+        state.historical_activities,
+        target_date,
+    )
     suunto_metrics = _suunto_daily_metrics(activities)
+    training_load_metrics = _training_load_metrics(
+        state.historical_activities,
+        target_date,
+    )
 
     console.print(Text(f"Physical Context — {target_date.isoformat()}", style="bold"))
     _render_section_title(console, "Daily Snapshot")
@@ -111,7 +149,7 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
                     separator=" / ",
                 ),
             ),
-            *_terminal_suunto_summary_rows(suunto_metrics),
+            *_terminal_suunto_summary_rows(suunto_metrics, training_load_metrics),
             (
                 "Strength",
                 _snapshot_strength_status(
@@ -127,23 +165,75 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
     )
 
     _render_section_title(console, "Trends")
-    trends = Table(box=None, show_edge=False, show_lines=False, expand=False, padding=(0, 2))
-    for column in ["  Metric", "Today", "7-day avg", "30-day avg", "Direction"]:
-        trends.add_column(column, style="bold white" if column.strip() == "Metric" else "", no_wrap=True)
-    trends.add_row(
-        _styled_terminal_value("  Walking distance", label="Metric"),
-        _styled_terminal_value(f"{walking_distance_km:.2f} km"),
-        _styled_terminal_value(walking_metrics["avg_7d"]),
-        _styled_terminal_value(walking_metrics["avg_30d"]),
-        _styled_terminal_value(
-            _terminal_trend_direction(
-                walking_distance_km,
-                _walking_average_value(walking_metrics["avg_7d"]),
-                _walking_average_value(walking_metrics["avg_30d"]),
+    if activity_trends:
+        _render_subsection_title(console, "Activity")
+        activity_table = Table(box=None, show_edge=False, show_lines=False, expand=False, padding=(0, 2))
+        for column in ["  Metric", "Today", "7-day total", "30-day weekly avg", "Direction"]:
+            activity_table.add_column(
+                column,
+                style="bold white" if column.strip() == "Metric" else "",
+                no_wrap=True,
             )
-        ),
-    )
-    trends.add_row(
+        for metric in activity_trends:
+            activity_table.add_row(
+                _styled_terminal_value(f"  {metric.label}", label="Metric"),
+                _styled_terminal_value(_format_activity_trend_value(metric.today, metric.unit)),
+                _styled_terminal_value(_format_activity_trend_total(metric.total_7d, metric.unit)),
+                _styled_terminal_value(
+                    _format_activity_trend_weekly_average(metric.weekly_avg_30d, metric.unit)
+                ),
+                _styled_terminal_value(metric.direction),
+            )
+        console.print(activity_table)
+
+    if training_load_trend is not None:
+        _render_subsection_title(console, "Training Load")
+        training_load_table = Table(
+            box=None,
+            show_edge=False,
+            show_lines=False,
+            expand=False,
+            padding=(0, 2),
+        )
+        for column in ["  Metric", "Today", "7-day total", "30-day weekly avg", "Direction"]:
+            training_load_table.add_column(
+                column,
+                style="bold white" if column.strip() == "Metric" else "",
+                no_wrap=True,
+            )
+        training_load_table.add_row(
+            _styled_terminal_value(f"  {training_load_trend.label}", label="Metric"),
+            _styled_terminal_value(
+                _format_activity_trend_value(
+                    training_load_trend.today,
+                    training_load_trend.unit,
+                )
+            ),
+            _styled_terminal_value(
+                _format_activity_trend_total(
+                    training_load_trend.total_7d,
+                    training_load_trend.unit,
+                )
+            ),
+            _styled_terminal_value(
+                _format_activity_trend_weekly_average(
+                    training_load_trend.weekly_avg_30d,
+                    training_load_trend.unit,
+                )
+            ),
+            _styled_terminal_value(training_load_trend.direction),
+        )
+        console.print(training_load_table)
+
+    _render_subsection_title(console, "Body")
+    body_trends = Table(box=None, show_edge=False, show_lines=False, expand=False, padding=(0, 2))
+    for column in ["  Metric", "Today", "7-day avg", "30-day avg", "Direction"]:
+        body_trends.add_column(
+            column,
+            style="bold white" if column.strip() == "Metric" else "",
+            no_wrap=True,
+        )
+    body_trends.add_row(
         _styled_terminal_value("  Weight", label="Metric"),
         _styled_terminal_value(weight_metrics["current_weight"]),
         _styled_terminal_value(weight_metrics["avg_7d"]),
@@ -157,7 +247,7 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         ),
     )
     if estimated_deficit_metrics is not None:
-        trends.add_row(
+        body_trends.add_row(
             _styled_terminal_value("  Estimated deficit", label="Metric"),
             _styled_terminal_value(_format_estimated_deficit(estimated_deficit_metrics.today)),
             _styled_terminal_value(_format_average_estimated_deficit(estimated_deficit_metrics.avg_7d)),
@@ -170,7 +260,7 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
                 )
             ),
         )
-    console.print(trends)
+    console.print(body_trends)
 
     body_rows = _terminal_body_kv_rows(state.measures, state.historical_measures, target_date)
     if body_rows:
@@ -188,6 +278,7 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
             activities,
             withings_steps,
             state.measures,
+            training_load_metrics,
         ),
         indent=2,
     )
@@ -201,10 +292,13 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
             withings_steps_text=withings_steps_text,
             walking_distance_km=walking_distance_km,
             swimming_duration_min=swimming_duration_min,
+            swimming_distance_km=swimming_distance_km,
             strength_count=len(strength_activities),
             strength_duration_min=strength_duration_min,
             suunto_metrics=suunto_metrics,
-            walking_metrics=walking_metrics,
+            training_load_metrics=training_load_metrics,
+            activity_trends=activity_trends,
+            training_load_trend=training_load_trend,
             weight_metrics=weight_metrics,
             bmi=_bmi_value(
                 _latest_measures_by_type(state.measures).get("weight"),
@@ -411,6 +505,11 @@ def _render_daily_state(state: DailyState) -> str:
         for activity in primary_today_activities
         if activity.activity_type == "swim"
     )
+    swimming_distance_km = sum(
+        activity.distance_km or 0.0
+        for activity in primary_today_activities
+        if activity.activity_type == "swim" and activity.source == "suunto"
+    )
     strength_activities = [
         activity
         for activity in primary_today_activities
@@ -419,7 +518,15 @@ def _render_daily_state(state: DailyState) -> str:
     strength_duration_min = sum(activity.duration_min for activity in strength_activities)
     weight_metrics = _weight_metrics(state.historical_measures, target_date)
     estimated_deficit_metrics = _estimated_deficit_metrics(state.historical_measures, target_date)
-    walking_metrics = _walking_metrics(historical_normalized_activities, target_date)
+    activity_trends = _activity_trend_metrics(
+        primary_today_activities,
+        historical_normalized_activities,
+        target_date,
+    )
+    training_load_trend = _training_load_trend_metric(
+        historical_normalized_activities,
+        target_date,
+    )
     ride_distance_km = sum(
         activity.distance_km or 0.0
         for activity in primary_today_activities
@@ -427,6 +534,10 @@ def _render_daily_state(state: DailyState) -> str:
     )
     body_rows = _body_rows(measures, state.historical_measures, target_date)
     suunto_metrics = _suunto_daily_metrics(primary_today_activities)
+    training_load_metrics = _training_load_metrics(
+        historical_normalized_activities,
+        target_date,
+    )
 
     lines = [
         f"# Physical Context - {target_date.isoformat()}",
@@ -438,22 +549,44 @@ def _render_daily_state(state: DailyState) -> str:
         f"| Movement | {_snapshot_movement_status(withings_steps, walking_distance_km, ride_distance_km, swimming_duration_min)} |",
         *[
             f"| {label} | {value} |"
-            for label, value in _suunto_summary_rows(suunto_metrics)
+            for label, value in _suunto_summary_rows(
+                suunto_metrics,
+                training_load_metrics,
+            )
         ],
         f"| Strength | {_snapshot_strength_status(strength_activities, state.hevy_sets)} |",
         f"| Body | {_snapshot_body_status(weight_metrics)} |",
         "",
         "## Trends",
         "",
+        *(
+            [
+                "### Activity",
+                "",
+                "| Metric | Today | 7-day total | 30-day weekly avg | Direction |",
+                "| --- | --- | --- | --- | --- |",
+                *[_render_activity_trend_row(metric) for metric in activity_trends],
+                "",
+            ]
+            if activity_trends
+            else []
+        ),
+        *(
+            [
+                "### Training Load",
+                "",
+                "| Metric | Today | 7-day total | 30-day weekly avg | Direction |",
+                "| --- | --- | --- | --- | --- |",
+                _render_activity_trend_row(training_load_trend),
+                "",
+            ]
+            if training_load_trend is not None
+            else []
+        ),
+        "### Body",
+        "",
         "| Metric | Today | 7-day avg | 30-day avg | Direction |",
         "| --- | --- | --- | --- | --- |",
-        (
-            "| Walking distance | "
-            f"{walking_distance_km:.2f} km | "
-            f"{walking_metrics['avg_7d']} | "
-            f"{walking_metrics['avg_30d']} | "
-            f"{_trend_direction(walking_metrics['trend'], walking_distance_km, _walking_average_value(walking_metrics['avg_30d']))} |"
-        ),
         (
             "| Weight | "
             f"{weight_metrics['current_weight']} | "
@@ -491,6 +624,14 @@ def _render_daily_state(state: DailyState) -> str:
             f"- Step source: {'Withings' if withings_steps is not None else 'None'}",
             f"- Body source: {'Withings' if measures else 'None'}",
             f"- Activity count: {len(primary_today_activities)} primary",
+            *(
+                [
+                    "- Training load history: "
+                    f"{_training_load_history_status(training_load_metrics.history_label)}"
+                ]
+                if training_load_metrics is not None
+                else []
+            ),
             f"- Missing or partial data: {_missing_data_summary(withings_steps, measures, primary_today_activities)}",
             "",
             "## Machine Handoff",
@@ -501,10 +642,13 @@ def _render_daily_state(state: DailyState) -> str:
                 withings_steps_text=withings_steps_text,
                 walking_distance_km=walking_distance_km,
                 swimming_duration_min=swimming_duration_min,
+                swimming_distance_km=swimming_distance_km,
                 strength_count=len(strength_activities),
                 strength_duration_min=strength_duration_min,
                 suunto_metrics=suunto_metrics,
-                walking_metrics=walking_metrics,
+                training_load_metrics=training_load_metrics,
+                activity_trends=activity_trends,
+                training_load_trend=training_load_trend,
                 weight_metrics=weight_metrics,
                 bmi=_bmi_value(
                     _latest_measures_by_type(measures).get("weight"),
@@ -530,13 +674,18 @@ def _snapshot_movement_status(
     formatted_steps: str | None = None,
     separator: str = " · ",
 ) -> str:
-    parts = [f"{formatted_steps or _format_step_count(withings_steps)} steps"]
+    step_part = f"{formatted_steps or _format_step_count(withings_steps)} steps"
+    movement_parts: list[str] = []
     if walking_distance_km > 0:
-        parts.append(f"{walking_distance_km:.2f} km walk")
+        movement_parts.append(f"{walking_distance_km:.2f} km walk")
     if ride_distance_km > 0:
-        parts.append(f"{ride_distance_km:.2f} km ride")
+        movement_parts.append(f"{ride_distance_km:.2f} km ride")
     if swimming_duration_min > 0:
-        parts.append(f"{swimming_duration_min:.0f} min swim")
+        movement_parts.append(f"{swimming_duration_min:.0f} min swim")
+    if withings_steps is None and walking_distance_km <= 0 and movement_parts:
+        parts = [*movement_parts, "steps unavailable"]
+    else:
+        parts = [step_part, *movement_parts]
     return separator.join(parts)
 
 
@@ -582,11 +731,6 @@ def _suunto_daily_metrics(activities: list[NormalizedActivity]) -> SuuntoDailyMe
     max_hr_values = [
         activity.max_hr for activity in suunto_activities if activity.max_hr is not None
     ]
-    recovery_values = [
-        activity.recovery_time_seconds
-        for activity in suunto_activities
-        if activity.recovery_time_seconds is not None
-    ]
     weighted_duration = sum(activity.duration_min for activity in weighted_hr_activities)
     return SuuntoDailyMetrics(
         total_tss=sum(tss_scores) if tss_scores else None,
@@ -598,19 +742,92 @@ def _suunto_daily_metrics(activities: list[NormalizedActivity]) -> SuuntoDailyMe
             else None
         ),
         max_hr=max(max_hr_values) if max_hr_values else None,
-        max_recovery_seconds=max(recovery_values) if recovery_values else None,
     )
 
 
-def _suunto_summary_rows(metrics: SuuntoDailyMetrics) -> list[tuple[str, str]]:
+def _training_load_metrics(
+    activities: list[NormalizedActivity],
+    target_date: date,
+) -> TrainingLoadMetrics | None:
+    daily_tss: dict[date, float] = {}
+    for activity in activities:
+        if activity.source != "suunto" or activity.tss_score is None:
+            continue
+        activity_date = _activity_date(activity.start_time)
+        if activity_date is None or activity_date > target_date:
+            continue
+        daily_tss[activity_date] = daily_tss.get(activity_date, 0.0) + activity.tss_score
+
+    if not daily_tss:
+        return None
+
+    ctl = 0.0
+    atl = 0.0
+    ctl_alpha = 1 - math.exp(-1 / 42)
+    atl_alpha = 1 - math.exp(-1 / 7)
+    current_date = min(daily_tss)
+    state_date = target_date
+    while current_date <= state_date:
+        load = daily_tss.get(current_date, 0.0)
+        ctl += ctl_alpha * (load - ctl)
+        atl += atl_alpha * (load - atl)
+        current_date += timedelta(days=1)
+
+    tsb = ctl - atl
+    history_days = (target_date - min(daily_tss)).days + 1
+    return TrainingLoadMetrics(
+        today_tss=daily_tss.get(target_date, 0.0),
+        ctl=ctl,
+        atl=atl,
+        tsb=tsb,
+        tsb_label=_tsb_label(tsb),
+        history_days=history_days,
+        history_label=_training_load_history_label(history_days),
+    )
+
+
+def _tsb_label(tsb: float) -> str:
+    if tsb < -30:
+        return "Too high intensity"
+    if tsb < -10:
+        return "Fatigue / Improving fitness"
+    if tsb < 15:
+        return "Training balance"
+    return "Losing fitness or recovering"
+
+
+def _training_load_history_label(history_days: int) -> str:
+    if history_days < 7:
+        return "Training load history limited; ATL/TSB warming up"
+    if history_days < 42:
+        return "Training load history limited; CTL warming up"
+    return "Training load baseline available"
+
+
+def _training_load_history_status(label: str) -> str:
+    prefix = "Training load history "
+    status = label.removeprefix(prefix)
+    return status[:1].upper() + status[1:]
+
+
+def _suunto_summary_rows(
+    metrics: SuuntoDailyMetrics,
+    training_load: TrainingLoadMetrics | None,
+) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     load_parts: list[str] = []
-    if metrics.total_tss is not None:
-        load_parts.append(f"TSS {metrics.total_tss:.1f}")
-    if metrics.max_recovery_seconds is not None:
-        load_parts.append(
-            f"Suunto recovery {_format_recovery_time(metrics.max_recovery_seconds)}"
+    if training_load is not None:
+        load_parts.append(f"TSS {training_load.today_tss:.1f}")
+        load_parts.extend(
+            [
+                f"CTL {training_load.ctl:.1f}",
+                f"ATL {training_load.atl:.1f}",
+                f"TSB {training_load.tsb:.1f}",
+                _training_load_snapshot_label(training_load),
+            ]
         )
+    elif metrics.total_tss is not None:
+        load_parts.append(f"TSS {metrics.total_tss:.1f}")
     if load_parts:
         rows.append(("Load", " · ".join(load_parts)))
 
@@ -627,10 +844,19 @@ def _suunto_summary_rows(metrics: SuuntoDailyMetrics) -> list[tuple[str, str]]:
     return rows
 
 
-def _terminal_suunto_summary_rows(metrics: SuuntoDailyMetrics) -> list[tuple[str, str]]:
+def _training_load_snapshot_label(metrics: TrainingLoadMetrics) -> str:
+    if metrics.history_days < 7:
+        return "warming up"
+    return metrics.tsb_label
+
+
+def _terminal_suunto_summary_rows(
+    metrics: SuuntoDailyMetrics,
+    training_load: TrainingLoadMetrics | None,
+) -> list[tuple[str, str]]:
     return [
         (label, value.replace(" · ", " / "))
-        for label, value in _suunto_summary_rows(metrics)
+        for label, value in _suunto_summary_rows(metrics, training_load)
     ]
 
 
@@ -649,19 +875,7 @@ def _activity_metric_parts(activity: NormalizedActivity) -> list[str]:
     if activity.tss_score is not None:
         method = f"({activity.tss_method.lower()})" if activity.tss_method else ""
         parts.append(f"TSS{method} {activity.tss_score:.1f}")
-    if activity.recovery_time_seconds is not None:
-        parts.append(
-            f"Suunto recovery {_format_recovery_time(activity.recovery_time_seconds)}"
-        )
     return parts
-
-
-def _format_recovery_time(seconds: float) -> str:
-    minutes = round(seconds / 60)
-    if minutes < 60:
-        return f"{minutes}m"
-    hours = minutes / 60
-    return f"{hours:.1f}".rstrip("0").rstrip(".") + "h"
 
 
 def _render_section_title(console: Any, title: str) -> None:
@@ -907,12 +1121,6 @@ def _format_percent_diff(value: float) -> str:
     return f"{rounded}%"
 
 
-def _walking_average_value(value: str) -> float | None:
-    if value == "Unknown":
-        return None
-    return _float_value(value.split(" ", 1)[0])
-
-
 def _weight_value(value: str) -> float | None:
     if value in {"Unknown", "No Withings weight available"}:
         return None
@@ -1084,14 +1292,23 @@ def _terminal_data_coverage_rows(
     activities: list[NormalizedActivity],
     withings_steps: int | None,
     measures: list[dict[str, str]],
+    training_load: TrainingLoadMetrics | None,
 ) -> list[tuple[str, str]]:
-    return [
+    rows = [
         ("Workout source", _activity_sources(activities)),
         ("Step source", "Withings" if withings_steps is not None else "None"),
         ("Body source", "Withings" if measures else "None"),
         ("Activity count", f"{len(activities)} primary"),
-        ("Missing data", _missing_data_summary(withings_steps, measures, activities)),
     ]
+    if training_load is not None:
+        rows.append(
+            (
+                "Training load history",
+                _training_load_history_status(training_load.history_label),
+            )
+        )
+    rows.append(("Missing data", _missing_data_summary(withings_steps, measures, activities)))
+    return rows
 
 
 def _withings_step_count(activity_summaries: list[dict[str, str]]) -> int | None:
@@ -1225,57 +1442,288 @@ def _average_estimated_deficit(weights: list[dict[str, str]], end_date: date, *,
     return sum(values) / len(values)
 
 
-def _walking_metrics(activities: list[NormalizedActivity], target_date: date) -> dict[str, str]:
-    current_7d = _average_daily_walking_distance(activities, target_date, days=7)
-    previous_7d = _average_daily_walking_distance(activities, target_date - _date_delta(7), days=7)
-    avg_30d = _average_daily_walking_distance(activities, target_date, days=30)
+def _activity_trend_metrics(
+    today_activities: list[NormalizedActivity],
+    activities: list[NormalizedActivity],
+    target_date: date,
+) -> list[ActivityTrendMetric]:
+    primary_type = _primary_activity_type(today_activities)
+    if primary_type is None:
+        return []
+
+    today_same_type = [
+        activity for activity in today_activities if activity.activity_type == primary_type
+    ]
+    rows: list[ActivityTrendMetric] = []
+    distance = sum(
+        activity.distance_km or 0.0
+        for activity in today_same_type
+        if primary_type != "swim" or activity.source == "suunto"
+    )
+    duration = sum(activity.duration_min for activity in today_same_type)
+    label = _activity_type_label(primary_type)
+
+    if distance > 0:
+        distance_history = _activity_metric_history(
+            activities,
+            target_date,
+            primary_type,
+            metric="distance",
+        )
+        rows.append(
+            ActivityTrendMetric(
+                label=f"{label} distance",
+                today=distance,
+                total_7d=distance_history["total_7d"],
+                weekly_avg_30d=distance_history["weekly_avg_30d"],
+                unit="km",
+                direction=_activity_trend_direction(
+                    primary_type,
+                    distance_history,
+                ),
+            )
+        )
+    duration_history = _activity_metric_history(
+        activities,
+        target_date,
+        primary_type,
+        metric="duration",
+    )
+    rows.append(
+        ActivityTrendMetric(
+            label=f"{label} duration",
+            today=duration,
+            total_7d=duration_history["total_7d"],
+            weekly_avg_30d=duration_history["weekly_avg_30d"],
+            unit="min",
+            direction=_activity_trend_direction(
+                primary_type,
+                duration_history,
+            ),
+        )
+    )
+    return rows
+
+
+def _training_load_trend_metric(
+    activities: list[NormalizedActivity],
+    target_date: date,
+) -> ActivityTrendMetric | None:
+    tss_activities = [
+        activity
+        for activity in activities
+        if activity.source == "suunto"
+        and activity.tss_score is not None
+        and (activity_date := _activity_date(activity.start_time)) is not None
+        and activity_date <= target_date
+    ]
+    if not tss_activities:
+        return None
+
+    trailing_7 = [
+        activity
+        for activity in tss_activities
+        if (_activity_date(activity.start_time) or date.min)
+        >= target_date - _date_delta(6)
+    ]
+    trailing_30 = [
+        activity
+        for activity in tss_activities
+        if (_activity_date(activity.start_time) or date.min)
+        >= target_date - _date_delta(29)
+    ]
+    today_tss = sum(
+        activity.tss_score or 0.0
+        for activity in tss_activities
+        if _activity_date(activity.start_time) == target_date
+    )
+    total_7d = sum(activity.tss_score or 0.0 for activity in trailing_7)
+    total_30d = sum(activity.tss_score or 0.0 for activity in trailing_30)
+    history_days = (
+        target_date
+        - min(
+            _activity_date(activity.start_time) or target_date
+            for activity in tss_activities
+        )
+    ).days + 1
+    weekly_avg_30d = total_30d * 7 / 30
+    return ActivityTrendMetric(
+        label="TSS",
+        today=today_tss,
+        total_7d=total_7d,
+        weekly_avg_30d=weekly_avg_30d,
+        unit="TSS",
+        direction=_training_load_trend_direction(
+            sessions_30d=len(trailing_30),
+            history_days=history_days,
+            total_7d=total_7d,
+            weekly_avg_30d=weekly_avg_30d,
+        ),
+    )
+
+
+def _primary_activity_type(activities: list[NormalizedActivity]) -> str | None:
+    duration_by_type: dict[str, float] = {}
+    for activity in activities:
+        duration_by_type[activity.activity_type] = (
+            duration_by_type.get(activity.activity_type, 0.0) + activity.duration_min
+        )
+    if not duration_by_type:
+        return None
+    return max(duration_by_type, key=duration_by_type.get)
+
+
+def _activity_type_label(activity_type: str) -> str:
     return {
-        "avg_7d": _format_average_distance(current_7d),
-        "avg_30d": _format_average_distance(avg_30d),
-        "trend": _distance_trend(current_7d, previous_7d),
-    }
+        "walk": "Walking",
+        "run": "Running",
+        "ride": "Cycling",
+        "swim": "Swimming",
+        "strength": "Strength",
+    }.get(activity_type, "Workout")
 
 
-def _average_daily_walking_distance(
+def _activity_metric_history(
     activities: list[NormalizedActivity],
     end_date: date,
+    activity_type: str,
     *,
-    days: int,
-) -> float | None:
-    start_date = end_date - _date_delta(days - 1)
-    activities_in_window = [
+    metric: str,
+) -> dict[str, float | int]:
+    activities_to_date = [
         activity
         for activity in activities
         if (activity_date := _activity_date(activity.start_time)) is not None
-        and start_date <= activity_date <= end_date
+        and activity_date <= end_date
+        and activity.activity_type == activity_type
+        and _activity_metric_value(activity, metric) is not None
     ]
-    if not activities_in_window:
-        return None
-
-    total_walking_distance = sum(
-        activity.distance_km or 0.0
-        for activity in activities_in_window
-        if _is_walking_activity(activity)
+    trailing_7 = [
+        activity
+        for activity in activities_to_date
+        if (_activity_date(activity.start_time) or date.min)
+        >= end_date - _date_delta(6)
+    ]
+    trailing_30 = [
+        activity
+        for activity in activities_to_date
+        if (_activity_date(activity.start_time) or date.min)
+        >= end_date - _date_delta(29)
+    ]
+    total_7d = sum(
+        _activity_metric_value(activity, metric) or 0.0
+        for activity in trailing_7
     )
-    return total_walking_distance / days
+    total_30d = sum(
+        _activity_metric_value(activity, metric) or 0.0
+        for activity in trailing_30
+    )
+    return {
+        "total_7d": total_7d,
+        "weekly_avg_30d": total_30d * 7 / 30,
+        "sessions_30d": len(trailing_30),
+        "sessions_all": len(activities_to_date),
+    }
 
 
-def _format_average_distance(value: float | None) -> str:
-    if value is None:
-        return "Unknown"
-    return f"{value:.2f} km/day"
+def _activity_metric_value(
+    activity: NormalizedActivity,
+    metric: str,
+) -> float | None:
+    if metric == "distance":
+        if activity.activity_type == "swim" and activity.source != "suunto":
+            return None
+        return activity.distance_km
+    if metric == "duration":
+        return activity.duration_min if activity.duration_min > 0 else None
+    return None
 
 
-def _distance_trend(current_7d: float | None, previous_7d: float | None) -> str:
-    if current_7d is None or previous_7d is None:
-        return "Unknown"
+def _activity_trend_direction(
+    activity_type: str,
+    history: dict[str, float | int],
+) -> str:
+    sessions_all = int(history["sessions_all"])
+    sessions_30d = int(history["sessions_30d"])
+    if sessions_all == 1:
+        return f"First recorded {_activity_type_noun(activity_type)}"
+    if sessions_30d < 3:
+        return "Baseline forming"
 
-    difference = current_7d - previous_7d
-    if difference <= -0.5:
-        return "Decreasing"
-    if difference >= 0.5:
-        return "Increasing"
-    return "Stable"
+    total_7d = float(history["total_7d"])
+    weekly_avg_30d = float(history["weekly_avg_30d"])
+    if weekly_avg_30d <= 0:
+        return "Baseline forming"
+    difference = total_7d - weekly_avg_30d
+    percent_diff = difference / weekly_avg_30d * 100
+    if abs(percent_diff) < 10:
+        return "Near 30-day weekly average"
+    direction = "Above" if percent_diff > 0 else "Below"
+    return f"{direction} 30-day weekly average ({_format_percent_diff(percent_diff)})"
+
+
+def _training_load_trend_direction(
+    *,
+    sessions_30d: int,
+    history_days: int,
+    total_7d: float,
+    weekly_avg_30d: float,
+) -> str:
+    if sessions_30d < 3:
+        return "Baseline forming"
+    if history_days < 42:
+        return "Training load history limited"
+    if weekly_avg_30d <= 0:
+        return "Baseline forming"
+    percent_diff = (total_7d - weekly_avg_30d) / weekly_avg_30d * 100
+    if abs(percent_diff) < 10:
+        return "Near 30-day weekly average"
+    direction = "Above" if percent_diff > 0 else "Below"
+    return f"{direction} 30-day weekly average ({_format_percent_diff(percent_diff)})"
+
+
+def _activity_type_noun(activity_type: str) -> str:
+    return {
+        "walk": "walk",
+        "run": "run",
+        "ride": "ride",
+        "swim": "swim",
+        "strength": "strength workout",
+    }.get(activity_type, "workout")
+
+
+def _format_activity_trend_value(value: float, unit: str) -> str:
+    if unit == "km":
+        return f"{value:.2f} km"
+    if unit == "min":
+        return f"{value:.0f} min"
+    return f"{value:.1f} TSS"
+
+
+def _format_activity_trend_total(value: float, unit: str) -> str:
+    if unit == "km":
+        return f"{value:.2f} km/week"
+    if unit == "min":
+        return f"{value:.0f} min/week"
+    return f"{value:.1f} TSS/week"
+
+
+def _format_activity_trend_weekly_average(value: float, unit: str) -> str:
+    if unit == "km":
+        return f"{value:.2f} km/week"
+    if unit == "min":
+        return f"{value:.0f} min/week"
+    return f"{value:.1f} TSS/week"
+
+
+def _render_activity_trend_row(metric: ActivityTrendMetric) -> str:
+    return (
+        f"| {metric.label} | "
+        f"{_format_activity_trend_value(metric.today, metric.unit)} | "
+        f"{_format_activity_trend_total(metric.total_7d, metric.unit)} | "
+        f"{_format_activity_trend_weekly_average(metric.weekly_avg_30d, metric.unit)} | "
+        f"{metric.direction} |"
+    )
 
 
 def _format_weight(measure: dict[str, str]) -> str:
@@ -1373,10 +1821,13 @@ def _ai_handoff(
     withings_steps_text: str,
     walking_distance_km: float,
     swimming_duration_min: float,
+    swimming_distance_km: float,
     strength_count: int,
     strength_duration_min: float,
     suunto_metrics: SuuntoDailyMetrics,
-    walking_metrics: dict[str, str],
+    training_load_metrics: TrainingLoadMetrics | None,
+    activity_trends: list[ActivityTrendMetric],
+    training_load_trend: ActivityTrendMetric | None,
     weight_metrics: dict[str, str],
     bmi: str | None,
     bmr: str | None,
@@ -1395,9 +1846,14 @@ def _ai_handoff(
             f"{walking_part}, {total_duration_min:.0f} min moving time, "
             f"and {withings_steps_text} Withings steps."
         )
+    swimming_parts: list[str] = []
+    if swimming_duration_min > 0:
+        swimming_parts.append(f"{swimming_duration_min:.0f} min")
+    if swimming_distance_km > 0:
+        swimming_parts.append(f"{swimming_distance_km:.2f} km")
     swimming_sentence = (
-        f" Swimming included {swimming_duration_min:.0f} min."
-        if swimming_duration_min > 0
+        f" Swimming included {' and '.join(swimming_parts)}."
+        if swimming_parts
         else ""
     )
     strength_sentence = (
@@ -1416,16 +1872,22 @@ def _ai_handoff(
     if estimated_deficit is not None:
         body_sentences.append(f"Estimated energy deficit is {estimated_deficit}.")
     return (
-        f"{activity_sentence}{_suunto_handoff_sentence(suunto_metrics)}"
+        f"{activity_sentence}{_suunto_handoff_sentence(suunto_metrics, training_load_metrics)}"
         f"{swimming_sentence}{strength_sentence} "
-        f"{_walking_handoff_sentence(walking_distance_km, walking_metrics)}"
+        f"{_activity_trend_handoff_sentence(activity_trends)}"
+        f"{_training_load_trend_handoff_sentence(training_load_trend)}"
         f"{' '.join(body_sentences)}"
     )
 
 
-def _suunto_handoff_sentence(metrics: SuuntoDailyMetrics) -> str:
+def _suunto_handoff_sentence(
+    metrics: SuuntoDailyMetrics,
+    training_load: TrainingLoadMetrics | None,
+) -> str:
     parts: list[str] = []
-    if metrics.total_tss is not None:
+    if training_load is not None:
+        parts.append(f"TSS {training_load.today_tss:.1f}")
+    elif metrics.total_tss is not None:
         parts.append(f"TSS {metrics.total_tss:.1f}")
     if metrics.avg_hr is not None:
         parts.append(f"average HR {metrics.avg_hr:.0f}")
@@ -1433,9 +1895,20 @@ def _suunto_handoff_sentence(metrics: SuuntoDailyMetrics) -> str:
         parts.append(f"maximum HR {metrics.max_hr:.0f}")
     if metrics.total_energy_kcal is not None:
         parts.append(f"activity energy {metrics.total_energy_kcal:.0f} kcal")
-    if metrics.max_recovery_seconds is not None:
-        parts.append(
-            f"Suunto recovery time {_format_recovery_time(metrics.max_recovery_seconds)}"
+    if training_load is not None:
+        tsb_state = (
+            "warming up"
+            if training_load.history_days < 7
+            else training_load.tsb_label
+        )
+        parts.extend(
+            [
+                f"end-of-day ingest-defined CTL {training_load.ctl:.1f}",
+                f"ATL {training_load.atl:.1f}",
+                f"TSB {training_load.tsb:.1f}",
+                f"TSB state {tsb_state}",
+                training_load.history_label,
+            ]
         )
     if not parts:
         return ""
@@ -1446,10 +1919,37 @@ def _pluralize(count: int, singular: str, plural: str) -> str:
     return singular if count == 1 else plural
 
 
-def _walking_handoff_sentence(walking_distance_km: float, walking_metrics: dict[str, str]) -> str:
-    if walking_distance_km <= 0:
+def _activity_trend_handoff_sentence(
+    metrics: list[ActivityTrendMetric],
+) -> str:
+    if not metrics:
         return ""
-    return f"Walking trend is {walking_metrics['trend']}. "
+    metric = metrics[0]
+    if metric.direction.startswith("First recorded"):
+        return f"{metric.direction} in available history. "
+    if metric.direction == "Baseline forming":
+        return f"{_activity_type_label(_primary_activity_type_from_label(metric.label))} baseline is still forming. "
+    return f"{metric.label} is {metric.direction.lower()}. "
+
+
+def _training_load_trend_handoff_sentence(
+    metric: ActivityTrendMetric | None,
+) -> str:
+    if metric is None:
+        return ""
+    weekly_total = _format_activity_trend_total(metric.total_7d, metric.unit)
+    return f"Training load over trailing 7 days is {weekly_total}; {metric.direction.lower()}. "
+
+
+def _primary_activity_type_from_label(label: str) -> str:
+    prefix = label.split(" ", 1)[0].lower()
+    return {
+        "walking": "walk",
+        "running": "run",
+        "cycling": "ride",
+        "swimming": "swim",
+        "strength": "strength",
+    }.get(prefix, "workout")
 
 
 def _is_walking_activity(activity: NormalizedActivity) -> bool:

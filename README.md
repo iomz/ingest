@@ -53,6 +53,11 @@ weight_change_kg = weight_30_days_ago - current_weight
 estimated_deficit_kcal_per_day = (weight_change_kg * 7700) / 30
 ```
 
+Physical Context also computes ingest-defined CTL, ATL, and TSB from daily
+Suunto TSS history. See [docs/metrics.md](docs/metrics.md#training-load) for
+formula, end-of-report-date semantics, history maturity, source references, and
+limitations. Values include report date TSS and support planning following day.
+
 ## Commands
 
 Primary daily workflow:
