@@ -4,6 +4,12 @@ data_dir = ""
 # IANA timezone used for naive source timestamps and report date boundaries.
 timezone = "Asia/Tokyo"
 
+[ui]
+# Terminal palette: "default" or "colorful".
+theme = "default"
+# Controls body-weight direction color only: "loss", "maintenance", or "gain".
+body_weight_goal = "maintenance"
+
 [withings]
 # Copy this file to your local config path and replace the placeholder values.
 # Store it as ${XDG_CONFIG_HOME:-~/.config}/ingest.toml, not in this repository.

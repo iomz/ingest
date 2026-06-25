@@ -49,6 +49,12 @@ class SuuntoConfig:
 
 
 @dataclass(frozen=True)
+class UIConfig:
+    theme: str
+    body_weight_goal: str
+
+
+@dataclass(frozen=True)
 class AppConfig:
     path: Path
     data: dict[str, Any]
@@ -59,6 +65,7 @@ class AppConfig:
     withings: WithingsConfig
     hevy: HevyConfig
     suunto: SuuntoConfig
+    ui: UIConfig
 
     @property
     def today_context_path(self) -> Path:
@@ -85,6 +92,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
     withings = _load_withings_config(data, data_dir)
     hevy = _load_hevy_config(data, data_dir)
     suunto = _load_suunto_config(data, data_dir)
+    ui = _load_ui_config(data)
     return AppConfig(
         path=config_path,
         data=data,
@@ -95,6 +103,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         withings=withings,
         hevy=hevy,
         suunto=suunto,
+        ui=ui,
     )
 
 
@@ -243,6 +252,19 @@ def _load_suunto_config(data: dict[str, Any], data_dir: Path) -> SuuntoConfig:
         raw_dir=_configured_data_path(data_dir, suunto, "suunto.raw_dir", Path("suunto/raw")),
         days=_positive_int(sync.get("days", 30), "sync.suunto.days"),
     )
+
+
+def _load_ui_config(data: dict[str, Any]) -> UIConfig:
+    ui = data.get("ui", {})
+    theme = str(ui.get("theme") or "default").strip().lower()
+    body_weight_goal = str(ui.get("body_weight_goal") or "maintenance").strip().lower()
+    if theme not in {"default", "colorful"}:
+        raise SystemExit("ui.theme must be one of: default, colorful")
+    if body_weight_goal not in {"loss", "maintenance", "gain"}:
+        raise SystemExit(
+            "ui.body_weight_goal must be one of: loss, maintenance, gain"
+        )
+    return UIConfig(theme=theme, body_weight_goal=body_weight_goal)
 
 
 def _configured_data_path(data_dir: Path, section: dict[str, Any], name: str, default: Path) -> Path:

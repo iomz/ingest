@@ -135,6 +135,18 @@ cp config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/ingest.toml"
 `app.timezone` defines local report dates and interpretation of source
 timestamps without an explicit UTC offset. It defaults to `Asia/Tokyo`.
 
+Terminal styling supports calm and colorful named themes. Body-weight direction
+color can follow a simple goal without changing report calculations:
+
+```toml
+[ui]
+theme = "colorful"
+body_weight_goal = "loss"
+```
+
+Valid weight goals are `loss`, `maintenance`, and `gain`. Rich continues to
+respect non-TTY output and `NO_COLOR`.
+
 Default application data directory:
 
 ```text

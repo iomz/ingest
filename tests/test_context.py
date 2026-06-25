@@ -12,6 +12,10 @@ from ingest.activities import normalize_suunto_activity, normalize_withings_acti
 from ingest.config import load_config
 from ingest.context import (
     DailyState,
+    _styled_terminal_value,
+    _terminal_distance_activity,
+    _trend_direction_role,
+    _weight_direction_role,
     generate_daily_context,
     render_daily_context,
     render_daily_terminal_context,
@@ -20,6 +24,7 @@ from ingest.context import (
     _training_load_history_label,
     _tsb_label,
 )
+from ingest.ui import terminal_theme
 
 
 def weight_measure(measured_date: date, value: float, *, time: str = "06:00:00") -> dict[str, str]:
@@ -185,6 +190,201 @@ class ContextTest(unittest.TestCase):
         self.assertGreater(len(handoff_lines), 1)
         self.assertTrue(all(line.startswith("  ") for line in handoff_lines))
         self.assertTrue(all(len(line) <= 88 for line in handoff_lines))
+        self.assertNotIn("\x1b[", output.getvalue())
+
+    def test_terminal_value_styles_semantic_states(self) -> None:
+        cases = [
+            ("12.3 km", "12.3 km", "bright_cyan", None),
+            (
+                "Faster than 30-day average",
+                "Faster than",
+                "green",
+                "positive",
+            ),
+            (
+                "Slower than 30-day average",
+                "Slower than",
+                "yellow",
+                "warning",
+            ),
+            ("Baseline forming", "Baseline forming", "yellow", None),
+            (
+                "Training load history limited",
+                "Training load history limited",
+                "yellow",
+                None,
+            ),
+            ("ATL/TSB warming up", "warming up", "yellow", None),
+            ("ATL/TSB warming\nup", "warming\nup", "yellow", None),
+            (
+                "Swimming pace baseline is still forming",
+                "baseline is still forming",
+                "yellow",
+                None,
+            ),
+            ("steps unavailable", "unavailable", "dim", None),
+            ("None", "None", "dim", None),
+        ]
+
+        for value, styled_text, expected_style, semantic_role in cases:
+            with self.subTest(value=value):
+                text = _styled_terminal_value(
+                    value,
+                    semantic_role=semantic_role,
+                )
+                matching_spans = [
+                    span
+                    for span in text.spans
+                    if styled_text in text.plain[span.start:span.end]
+                ]
+                self.assertTrue(matching_spans)
+                self.assertIn(
+                    expected_style,
+                    {str(span.style) for span in matching_spans},
+                )
+
+    def test_terminal_activity_source_id_is_dim(self) -> None:
+        activity = normalize_withings_activity(
+            {
+                "source_id": "walk-123",
+                "start_time": "2026-05-29T08:00:00",
+                "duration_min": "30.00",
+                "distance_km": "2.00",
+                "activity_type": "walk",
+            }
+        )
+
+        text = _terminal_distance_activity(activity)
+        source_spans = [
+            span
+            for span in text.spans
+            if "withings:walk-123" in text.plain[span.start:span.end]
+        ]
+        numeric_spans = [
+            span
+            for span in text.spans
+            if text.plain[span.start:span.end] in {"2.00 km", "30 min"}
+        ]
+
+        self.assertEqual({str(span.style) for span in source_spans}, {"dim"})
+        self.assertEqual(
+            {str(span.style) for span in numeric_spans},
+            {"bright_cyan"},
+        )
+
+    def test_weight_direction_role_follows_configured_goal(self) -> None:
+        self.assertEqual(_weight_direction_role(98, 99, 100, "loss"), "positive")
+        self.assertEqual(_weight_direction_role(102, 101, 100, "loss"), "warning")
+        self.assertEqual(_weight_direction_role(102, 101, 100, "gain"), "positive")
+        self.assertEqual(_weight_direction_role(98, 99, 100, "gain"), "warning")
+        self.assertIsNone(_weight_direction_role(98, 99, 100, "maintenance"))
+
+        maintenance_text = _styled_terminal_value(
+            "Below 30d avg (-2%)",
+        )
+        self.assertNotIn(
+            "yellow",
+            {str(span.style) for span in maintenance_text.spans},
+        )
+
+        loss_text = _styled_terminal_value(
+            "Below 30d avg (-2%)",
+            semantic_role=_weight_direction_role(98, 99, 100, "loss"),
+        )
+        self.assertIn(
+            "green",
+            {str(span.style) for span in loss_text.spans},
+        )
+
+    def test_trend_direction_role_is_metric_aware(self) -> None:
+        cases = [
+            ("Swimming pace", "Baseline forming", "maintenance", "baseline_forming"),
+            (
+                "TSS",
+                "Training load history limited",
+                "maintenance",
+                "limited_history",
+            ),
+            (
+                "Swimming pace",
+                "Faster than 30-day average",
+                "maintenance",
+                "positive",
+            ),
+            (
+                "Cycling speed",
+                "Slower than 30-day average",
+                "maintenance",
+                "warning",
+            ),
+            (
+                "Estimated deficit",
+                "Above 30d avg (+23%)",
+                "maintenance",
+                "positive",
+            ),
+            (
+                "Estimated deficit",
+                "Below 30d avg (-10%)",
+                "maintenance",
+                "warning",
+            ),
+        ]
+
+        for metric, direction, goal, expected in cases:
+            with self.subTest(metric=metric, direction=direction):
+                self.assertEqual(
+                    _trend_direction_role(
+                        metric,
+                        direction,
+                        body_weight_goal=goal,
+                        today=500,
+                    ),
+                    expected,
+                )
+
+        self.assertEqual(
+            _trend_direction_role(
+                "Weight",
+                "Below 30d avg (-2%)",
+                body_weight_goal="loss",
+                today=98,
+                avg_7d=99,
+                avg_30d=100,
+            ),
+            "positive",
+        )
+        self.assertIsNone(
+            _trend_direction_role(
+                "Walking distance",
+                "Above 30-day weekly average (+20%)",
+                body_weight_goal="loss",
+            )
+        )
+
+    def test_colorful_theme_applies_semantic_direction_roles(self) -> None:
+        theme = terminal_theme("colorful")
+        cases = [
+            ("Baseline forming", "baseline_forming"),
+            (
+                "Training load history limited",
+                "limited_history",
+            ),
+            ("Faster than 30-day average", "positive"),
+            ("Slower than 30-day average", "warning"),
+        ]
+
+        for value, role in cases:
+            with self.subTest(value=value):
+                text = _styled_terminal_value(
+                    value,
+                    theme=theme,
+                    semantic_role=role,
+                )
+                self.assertIn(
+                    theme.style(role),
+                    {str(span.style) for span in text.spans},
+                )
 
     def test_renders_activity_summary(self) -> None:
         content = render_daily_context(
