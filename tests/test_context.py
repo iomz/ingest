@@ -399,6 +399,104 @@ class ContextTest(unittest.TestCase):
             "Walking distance is above 30-day weekly average (+186%).",
             content,
         )
+        self.assertIn(
+            "| Walking pace | 12:00 min/km | 12:00 min/km | 12:00 min/km | "
+            "Near 30-day average |",
+            content,
+        )
+        trends = content.split("## Trends", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("### Workout", trends)
+        self.assertIn("### Performance", trends)
+        self.assertIn("### Body", trends)
+        self.assertNotIn("### Activity", trends)
+        self.assertNotIn("#### Volume", trends)
+        self.assertNotIn("### Training Load", trends)
+
+    def test_walking_pace_uses_distance_weighted_aggregation_and_lower_is_faster(self) -> None:
+        historical_activities = [
+            {
+                "start_time": "2026-05-27T06:00:00Z",
+                "activity_type": "Walk",
+                "distance_km": "1.00",
+                "duration_min": "20.00",
+            },
+            {
+                "start_time": "2026-05-28T06:00:00Z",
+                "activity_type": "Walk",
+                "distance_km": "9.00",
+                "duration_min": "90.00",
+            },
+            {
+                "start_time": "2026-05-29T06:00:00Z",
+                "activity_type": "Walk",
+                "distance_km": "5.00",
+                "duration_min": "45.00",
+            },
+        ]
+
+        content = render_daily_context(
+            date(2026, 5, 29),
+            withings_activities_for_date(historical_activities, date(2026, 5, 29)),
+            historical_activities=historical_activities,
+        )
+
+        self.assertIn(
+            "| Walking pace | 9:00 min/km | 10:20 min/km | 10:20 min/km | "
+            "Faster than 30-day average |",
+            content,
+        )
+        self.assertIn(
+            "Walking pace was faster than 30-day average.",
+            content,
+        )
+
+    def test_omits_pace_when_distance_is_missing(self) -> None:
+        content = render_daily_context(
+            date(2026, 5, 29),
+            [
+                {
+                    "start_time": "2026-05-29T06:00:00Z",
+                    "activity_type": "Run",
+                    "duration_min": "30.00",
+                }
+            ],
+        )
+
+        self.assertNotIn("Running pace", content)
+
+    def test_cycling_speed_uses_higher_is_faster_direction(self) -> None:
+        historical_activities = [
+            {
+                "start_time": "2026-05-27T06:00:00Z",
+                "activity_type": "Ride",
+                "distance_km": "20.00",
+                "duration_min": "60.00",
+            },
+            {
+                "start_time": "2026-05-28T06:00:00Z",
+                "activity_type": "Ride",
+                "distance_km": "20.00",
+                "duration_min": "60.00",
+            },
+            {
+                "start_time": "2026-05-29T06:00:00Z",
+                "activity_type": "Ride",
+                "distance_km": "30.00",
+                "duration_min": "60.00",
+            },
+        ]
+
+        content = render_daily_context(
+            date(2026, 5, 29),
+            withings_activities_for_date(historical_activities, date(2026, 5, 29)),
+            historical_activities=historical_activities,
+        )
+
+        self.assertIn(
+            "| Cycling speed | 30.00 km/h | 23.33 km/h | 23.33 km/h | "
+            "Faster than 30-day average |",
+            content,
+        )
 
     def test_renders_weight_trend_from_historical_measures(self) -> None:
         historical_measures = [
