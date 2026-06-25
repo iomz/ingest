@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import csv
+import math
 import re
 import shutil
 import textwrap
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ingest.activities import (
+    DEFAULT_TIMEZONE,
     NormalizedActivity,
     normalize_hevy_activity,
     normalize_suunto_activity,
@@ -32,28 +35,32 @@ class DailyState:
 
 
 @dataclass(frozen=True)
-class RecoveryMetrics:
-    compatibility: str
-    fatigue_risk: str
-    load_score: float
-    drivers: list[str]
-    suggested_next_day: list[str]
+class SuuntoDailyMetrics:
+    total_tss: float | None
+    total_energy_kcal: float | None
+    avg_hr: float | None
+    max_hr: float | None
 
 
 @dataclass(frozen=True)
-class ActivityMetrics:
+class TrainingLoadMetrics:
+    today_tss: float
+    ctl: float
+    atl: float
+    tsb: float
+    tsb_label: str
+    history_days: int
+    history_label: str
+
+
+@dataclass(frozen=True)
+class ActivityTrendMetric:
     label: str
-    score: float | None
-    avg_7d: float | None
-    avg_30d: float | None
-    trend: str
-
-
-@dataclass(frozen=True)
-class ActivityEffortTotals:
-    non_swim_distance_km: float
-    duration_min: float
-    activity_count: int
+    today: float
+    total_7d: float
+    weekly_avg_30d: float
+    unit: str
+    direction: str
 
 
 @dataclass(frozen=True)
@@ -63,14 +70,11 @@ class EstimatedDeficitMetrics:
     avg_30d: float | None
 
 
-WALK_STEPS_PER_KM = 1300
-RUN_STEPS_PER_KM = 1200
-WALK_MIN_PER_KM = 12
 DERIVED_BODY_METRIC_LABELS = {"BMI", "BMR"}
 
 
 def generate_daily_context(config: AppConfig, target_date: date | None = None) -> Path:
-    target = target_date or date.today()
+    target = target_date or datetime.now(config.timezone).date()
     state = build_daily_state(config, target)
     return write_text_file(config.daily_context_path, _render_daily_state(state))
 
@@ -88,7 +92,6 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
     target_date = state.target_date
     activities = state.activities
     withings_steps = _withings_step_count(state.withings_activity_summaries)
-    activity_effort_totals = _activity_effort_totals(activities, state.withings_activity_summaries)
     logged_duration_min = sum(activity.duration_min for activity in activities)
     withings_steps_text = _format_terminal_step_count(withings_steps)
     walking_distance_km = sum(
@@ -101,6 +104,11 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         for activity in activities
         if activity.activity_type == "swim"
     )
+    swimming_distance_km = sum(
+        activity.distance_km or 0.0
+        for activity in activities
+        if activity.activity_type == "swim" and activity.source == "suunto"
+    )
     strength_activities = [activity for activity in activities if activity.activity_type == "strength"]
     strength_duration_min = sum(activity.duration_min for activity in strength_activities)
     ride_distance_km = sum(
@@ -108,31 +116,28 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         for activity in activities
         if activity.activity_type == "ride"
     )
-    activity_metrics = _activity_metrics(
-        activities,
-        state.historical_activities,
-        state.historical_withings_activity_summaries,
-        target_date,
-        effort_totals=activity_effort_totals,
-    )
-    recovery_metrics = _recovery_metrics(
-        activities,
-        state.hevy_sets,
-        walking_distance_km=walking_distance_km,
-        swimming_duration_min=swimming_duration_min,
-    )
     weight_metrics = _weight_metrics(state.historical_measures, target_date)
     estimated_deficit_metrics = _estimated_deficit_metrics(state.historical_measures, target_date)
-    walking_metrics = _walking_metrics(state.historical_activities, target_date)
-    sources = _activity_sources(activities)
+    activity_trends = _activity_trend_metrics(
+        activities,
+        state.historical_activities,
+        target_date,
+    )
+    training_load_trend = _training_load_trend_metric(
+        state.historical_activities,
+        target_date,
+    )
+    suunto_metrics = _suunto_daily_metrics(activities)
+    training_load_metrics = _training_load_metrics(
+        state.historical_activities,
+        target_date,
+    )
 
     console.print(Text(f"Physical Context — {target_date.isoformat()}", style="bold"))
     _render_section_title(console, "Daily Snapshot")
     _render_kv_block(
         console,
         [
-            ("Activity", _snapshot_activity_status(activity_metrics, separator=" / ")),
-            ("Recovery", _snapshot_recovery_status(recovery_metrics, separator=" / ")),
             (
                 "Movement",
                 _snapshot_movement_status(
@@ -144,6 +149,7 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
                     separator=" / ",
                 ),
             ),
+            *_terminal_suunto_summary_rows(suunto_metrics, training_load_metrics),
             (
                 "Strength",
                 _snapshot_strength_status(
@@ -158,46 +164,76 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         indent=2,
     )
 
-    _render_section_title(console, "Recovery")
-    _render_kv_block(
-        console,
-        [
-            ("Compatibility", recovery_metrics.compatibility),
-            ("Fatigue risk", recovery_metrics.fatigue_risk),
-            ("Recovery load score", f"{recovery_metrics.load_score:.1f}"),
-        ],
-        indent=2,
-    )
-    _render_subsection_title(console, "Primary drivers")
-    _render_bullets(console, [_format_terminal_driver(driver) for driver in recovery_metrics.drivers], indent=4)
-    _render_subsection_title(console, "Recovery flags")
-    _render_bullets(console, recovery_metrics.suggested_next_day, indent=4)
-
     _render_section_title(console, "Trends")
-    trends = Table(box=None, show_edge=False, show_lines=False, expand=False, padding=(0, 2))
-    for column in ["  Metric", "Today", "7-day avg", "30-day avg", "Direction"]:
-        trends.add_column(column, style="bold white" if column.strip() == "Metric" else "", no_wrap=True)
-    trends.add_row(
-        _styled_terminal_value("  Activity score", label="Metric"),
-        _styled_terminal_value(_format_activity_score(activity_metrics.score)),
-        _styled_terminal_value(_format_average_activity_score(activity_metrics.avg_7d)),
-        _styled_terminal_value(_format_average_activity_score(activity_metrics.avg_30d)),
-        _styled_terminal_value(_terminal_trend_direction(activity_metrics.score, activity_metrics.avg_7d, activity_metrics.avg_30d)),
-    )
-    trends.add_row(
-        _styled_terminal_value("  Walking distance", label="Metric"),
-        _styled_terminal_value(f"{walking_distance_km:.2f} km"),
-        _styled_terminal_value(walking_metrics["avg_7d"]),
-        _styled_terminal_value(walking_metrics["avg_30d"]),
-        _styled_terminal_value(
-            _terminal_trend_direction(
-                walking_distance_km,
-                _walking_average_value(walking_metrics["avg_7d"]),
-                _walking_average_value(walking_metrics["avg_30d"]),
+    if activity_trends:
+        _render_subsection_title(console, "Activity")
+        activity_table = Table(box=None, show_edge=False, show_lines=False, expand=False, padding=(0, 2))
+        for column in ["  Metric", "Today", "7-day total", "30-day weekly avg", "Direction"]:
+            activity_table.add_column(
+                column,
+                style="bold white" if column.strip() == "Metric" else "",
+                no_wrap=True,
             )
-        ),
-    )
-    trends.add_row(
+        for metric in activity_trends:
+            activity_table.add_row(
+                _styled_terminal_value(f"  {metric.label}", label="Metric"),
+                _styled_terminal_value(_format_activity_trend_value(metric.today, metric.unit)),
+                _styled_terminal_value(_format_activity_trend_total(metric.total_7d, metric.unit)),
+                _styled_terminal_value(
+                    _format_activity_trend_weekly_average(metric.weekly_avg_30d, metric.unit)
+                ),
+                _styled_terminal_value(metric.direction),
+            )
+        console.print(activity_table)
+
+    if training_load_trend is not None:
+        _render_subsection_title(console, "Training Load")
+        training_load_table = Table(
+            box=None,
+            show_edge=False,
+            show_lines=False,
+            expand=False,
+            padding=(0, 2),
+        )
+        for column in ["  Metric", "Today", "7-day total", "30-day weekly avg", "Direction"]:
+            training_load_table.add_column(
+                column,
+                style="bold white" if column.strip() == "Metric" else "",
+                no_wrap=True,
+            )
+        training_load_table.add_row(
+            _styled_terminal_value(f"  {training_load_trend.label}", label="Metric"),
+            _styled_terminal_value(
+                _format_activity_trend_value(
+                    training_load_trend.today,
+                    training_load_trend.unit,
+                )
+            ),
+            _styled_terminal_value(
+                _format_activity_trend_total(
+                    training_load_trend.total_7d,
+                    training_load_trend.unit,
+                )
+            ),
+            _styled_terminal_value(
+                _format_activity_trend_weekly_average(
+                    training_load_trend.weekly_avg_30d,
+                    training_load_trend.unit,
+                )
+            ),
+            _styled_terminal_value(training_load_trend.direction),
+        )
+        console.print(training_load_table)
+
+    _render_subsection_title(console, "Body")
+    body_trends = Table(box=None, show_edge=False, show_lines=False, expand=False, padding=(0, 2))
+    for column in ["  Metric", "Today", "7-day avg", "30-day avg", "Direction"]:
+        body_trends.add_column(
+            column,
+            style="bold white" if column.strip() == "Metric" else "",
+            no_wrap=True,
+        )
+    body_trends.add_row(
         _styled_terminal_value("  Weight", label="Metric"),
         _styled_terminal_value(weight_metrics["current_weight"]),
         _styled_terminal_value(weight_metrics["avg_7d"]),
@@ -211,7 +247,7 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         ),
     )
     if estimated_deficit_metrics is not None:
-        trends.add_row(
+        body_trends.add_row(
             _styled_terminal_value("  Estimated deficit", label="Metric"),
             _styled_terminal_value(_format_estimated_deficit(estimated_deficit_metrics.today)),
             _styled_terminal_value(_format_average_estimated_deficit(estimated_deficit_metrics.avg_7d)),
@@ -224,7 +260,7 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
                 )
             ),
         )
-    console.print(trends)
+    console.print(body_trends)
 
     body_rows = _terminal_body_kv_rows(state.measures, state.historical_measures, target_date)
     if body_rows:
@@ -238,11 +274,12 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
     _render_section_title(console, "Data Coverage")
     _render_kv_block(
         console,
-        [
-            ("Sources", sources),
-            ("Activity count", str(len(activities))),
-            ("Missing data", _missing_data_summary(withings_steps, state.measures, activities)),
-        ],
+        _terminal_data_coverage_rows(
+            activities,
+            withings_steps,
+            state.measures,
+            training_load_metrics,
+        ),
         indent=2,
     )
 
@@ -251,15 +288,17 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
         console,
         _ai_handoff(
             activities=activities,
-            activity_metrics=activity_metrics,
             total_duration_min=logged_duration_min,
             withings_steps_text=withings_steps_text,
             walking_distance_km=walking_distance_km,
             swimming_duration_min=swimming_duration_min,
+            swimming_distance_km=swimming_distance_km,
             strength_count=len(strength_activities),
             strength_duration_min=strength_duration_min,
-            recovery_metrics=recovery_metrics,
-            walking_metrics=walking_metrics,
+            suunto_metrics=suunto_metrics,
+            training_load_metrics=training_load_metrics,
+            activity_trends=activity_trends,
+            training_load_trend=training_load_trend,
             weight_metrics=weight_metrics,
             bmi=_bmi_value(
                 _latest_measures_by_type(state.measures).get("weight"),
@@ -275,12 +314,13 @@ def render_daily_terminal_context(state: DailyState, console: Any | None = None)
 
 def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
     withings_activities = read_withings_activities(config.withings.workouts_csv)
-    withings_activities_for_target = withings_activities_for_date(withings_activities, target_date)
     hevy_activities = read_hevy_activities(config.hevy.workouts_csv)
-    hevy_activities_for_target = activities_for_date(hevy_activities, target_date)
     suunto_activities = read_suunto_activities(config.suunto.workouts_csv)
-    suunto_activities_for_target = activities_for_date(suunto_activities, target_date)
-    hevy_sets = sets_for_date(read_hevy_sets(config.hevy.sets_csv), target_date)
+    hevy_sets = sets_for_date(
+        read_hevy_sets(config.hevy.sets_csv),
+        target_date,
+        config.timezone,
+    )
     all_measures = read_withings_measures(config.withings.measures_csv)
     measures = measures_for_date(all_measures, target_date)
     all_withings_activity_summaries = read_withings_activity_summaries(config.withings.activity_csv)
@@ -288,21 +328,24 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
         all_withings_activity_summaries,
         target_date,
     )
+    normalized_activities = _prefer_suunto_activities(
+        [
+            *_normalize_withings_activities(withings_activities, config.timezone),
+            *_normalize_hevy_activities(hevy_activities, config.timezone),
+            *_normalize_suunto_activities(suunto_activities, config.timezone),
+        ]
+    )
     return DailyState(
         target_date=target_date,
         activities=[
-            *_normalize_withings_activities(withings_activities_for_target),
-            *_normalize_hevy_activities(hevy_activities_for_target),
-            *_normalize_suunto_activities(suunto_activities_for_target),
+            activity
+            for activity in normalized_activities
+            if _activity_date(activity.start_time) == target_date
         ],
         measures=measures,
         withings_activity_summaries=withings_activity_summaries,
         historical_withings_activity_summaries=all_withings_activity_summaries,
-        historical_activities=[
-            *_normalize_withings_activities(withings_activities),
-            *_normalize_hevy_activities(hevy_activities),
-            *_normalize_suunto_activities(suunto_activities),
-        ],
+        historical_activities=normalized_activities,
         historical_measures=all_measures,
         hevy_sets=hevy_sets,
     )
@@ -353,22 +396,36 @@ def _read_activity_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(csv_file))
 
 
-def withings_activities_for_date(activities: list[dict[str, str]], target_date: date) -> list[dict[str, str]]:
-    return activities_for_date(activities, target_date)
+def withings_activities_for_date(
+    activities: list[dict[str, str]],
+    target_date: date,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[dict[str, str]]:
+    return activities_for_date(activities, target_date, local_timezone)
 
 
-def activities_for_date(activities: list[dict[str, str]], target_date: date) -> list[dict[str, str]]:
-    target = target_date.isoformat()
+def activities_for_date(
+    activities: list[dict[str, str]],
+    target_date: date,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[dict[str, str]]:
     return [
         activity
         for activity in activities
-        if activity.get("start_time", "").startswith(target)
+        if _timestamp_date(activity.get("start_time", ""), local_timezone) == target_date
     ]
 
 
-def sets_for_date(sets: list[dict[str, str]], target_date: date) -> list[dict[str, str]]:
-    target = target_date.isoformat()
-    return [set_row for set_row in sets if set_row.get("start_time", "").startswith(target)]
+def sets_for_date(
+    sets: list[dict[str, str]],
+    target_date: date,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[dict[str, str]]:
+    return [
+        set_row
+        for set_row in sets
+        if _timestamp_date(set_row.get("start_time", ""), local_timezone) == target_date
+    ]
 
 
 def measures_for_date(measures: list[dict[str, str]], target_date: date) -> list[dict[str, str]]:
@@ -393,6 +450,7 @@ def render_daily_context(
     hevy_sets: list[dict[str, str]] | None = None,
     withings_activity_summaries: list[dict[str, str]] | None = None,
     historical_withings_activity_summaries: list[dict[str, str]] | None = None,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
 ) -> str:
     measures = measures or []
     historical_measures = historical_measures if historical_measures is not None else measures
@@ -405,11 +463,15 @@ def render_daily_context(
     )
     state = DailyState(
         target_date=target_date,
-        activities=_normalize_withings_activities(activities),
+        activities=_prefer_suunto_activities(
+            _normalize_activities(activities, local_timezone)
+        ),
         measures=measures,
         withings_activity_summaries=withings_activity_summaries,
         historical_withings_activity_summaries=historical_withings_activity_summaries,
-        historical_activities=_normalize_withings_activities(historical_activities),
+        historical_activities=_prefer_suunto_activities(
+            _normalize_activities(historical_activities, local_timezone)
+        ),
         historical_measures=historical_measures,
         hevy_sets=hevy_sets or [],
     )
@@ -432,10 +494,6 @@ def _render_daily_state(state: DailyState) -> str:
     historical_normalized_activities = state.historical_activities
     measures = state.measures
     withings_steps = _withings_step_count(state.withings_activity_summaries)
-    activity_effort_totals = _activity_effort_totals(
-        primary_today_activities,
-        state.withings_activity_summaries,
-    )
     logged_duration_min = sum(activity.duration_min for activity in primary_today_activities)
     withings_steps_text = _format_step_count(withings_steps)
     walking_distance_km = sum(
@@ -448,35 +506,39 @@ def _render_daily_state(state: DailyState) -> str:
         for activity in primary_today_activities
         if activity.activity_type == "swim"
     )
+    swimming_distance_km = sum(
+        activity.distance_km or 0.0
+        for activity in primary_today_activities
+        if activity.activity_type == "swim" and activity.source == "suunto"
+    )
     strength_activities = [
         activity
         for activity in primary_today_activities
         if activity.activity_type == "strength"
     ]
     strength_duration_min = sum(activity.duration_min for activity in strength_activities)
-    activity_metrics = _activity_metrics(
-        primary_today_activities,
-        historical_normalized_activities,
-        state.historical_withings_activity_summaries,
-        target_date,
-        effort_totals=activity_effort_totals,
-    )
-    recovery_metrics = _recovery_metrics(
-        primary_today_activities,
-        state.hevy_sets,
-        walking_distance_km=walking_distance_km,
-        swimming_duration_min=swimming_duration_min,
-    )
     weight_metrics = _weight_metrics(state.historical_measures, target_date)
     estimated_deficit_metrics = _estimated_deficit_metrics(state.historical_measures, target_date)
-    walking_metrics = _walking_metrics(historical_normalized_activities, target_date)
-    sources = _activity_sources(primary_today_activities)
+    activity_trends = _activity_trend_metrics(
+        primary_today_activities,
+        historical_normalized_activities,
+        target_date,
+    )
+    training_load_trend = _training_load_trend_metric(
+        historical_normalized_activities,
+        target_date,
+    )
     ride_distance_km = sum(
         activity.distance_km or 0.0
         for activity in primary_today_activities
         if activity.activity_type == "ride"
     )
     body_rows = _body_rows(measures, state.historical_measures, target_date)
+    suunto_metrics = _suunto_daily_metrics(primary_today_activities)
+    training_load_metrics = _training_load_metrics(
+        historical_normalized_activities,
+        target_date,
+    )
 
     lines = [
         f"# Physical Context - {target_date.isoformat()}",
@@ -485,40 +547,47 @@ def _render_daily_state(state: DailyState) -> str:
         "",
         "| Area | Status |",
         "| --- | --- |",
-        f"| Activity | {_snapshot_activity_status(activity_metrics)} |",
-        f"| Recovery | {_snapshot_recovery_status(recovery_metrics)} |",
         f"| Movement | {_snapshot_movement_status(withings_steps, walking_distance_km, ride_distance_km, swimming_duration_min)} |",
+        *[
+            f"| {label} | {value} |"
+            for label, value in _suunto_summary_rows(
+                suunto_metrics,
+                training_load_metrics,
+            )
+        ],
         f"| Strength | {_snapshot_strength_status(strength_activities, state.hevy_sets)} |",
         f"| Body | {_snapshot_body_status(weight_metrics)} |",
         "",
-        "## Recovery",
-        "",
-        f"- Compatibility: {recovery_metrics.compatibility}",
-        f"- Fatigue risk: {recovery_metrics.fatigue_risk}",
-        f"- Recovery load score: {recovery_metrics.load_score:.1f}",
-        "- Primary drivers:",
-        *[f"  - {driver}" for driver in recovery_metrics.drivers],
-        "- Recovery Flags:",
-        *[f"  - {suggestion}" for suggestion in recovery_metrics.suggested_next_day],
-        "",
         "## Trends",
+        "",
+        *(
+            [
+                "### Activity",
+                "",
+                "| Metric | Today | 7-day total | 30-day weekly avg | Direction |",
+                "| --- | --- | --- | --- | --- |",
+                *[_render_activity_trend_row(metric) for metric in activity_trends],
+                "",
+            ]
+            if activity_trends
+            else []
+        ),
+        *(
+            [
+                "### Training Load",
+                "",
+                "| Metric | Today | 7-day total | 30-day weekly avg | Direction |",
+                "| --- | --- | --- | --- | --- |",
+                _render_activity_trend_row(training_load_trend),
+                "",
+            ]
+            if training_load_trend is not None
+            else []
+        ),
+        "### Body",
         "",
         "| Metric | Today | 7-day avg | 30-day avg | Direction |",
         "| --- | --- | --- | --- | --- |",
-        (
-            "| Activity score | "
-            f"{_format_activity_score(activity_metrics.score)} | "
-            f"{_format_average_activity_score(activity_metrics.avg_7d)} | "
-            f"{_format_average_activity_score(activity_metrics.avg_30d)} | "
-            f"{_trend_direction(activity_metrics.trend, activity_metrics.score, activity_metrics.avg_30d)} |"
-        ),
-        (
-            "| Walking distance | "
-            f"{walking_distance_km:.2f} km | "
-            f"{walking_metrics['avg_7d']} | "
-            f"{walking_metrics['avg_30d']} | "
-            f"{_trend_direction(walking_metrics['trend'], walking_distance_km, _walking_average_value(walking_metrics['avg_30d']))} |"
-        ),
         (
             "| Weight | "
             f"{weight_metrics['current_weight']} | "
@@ -552,23 +621,35 @@ def _render_daily_state(state: DailyState) -> str:
         [
             "## Data Coverage",
             "",
-            f"- Sources: {sources}",
-            f"- Activity count: {len(primary_today_activities)}",
+            f"- Workout source: {_activity_sources(primary_today_activities)}",
+            f"- Step source: {'Withings' if withings_steps is not None else 'None'}",
+            f"- Body source: {'Withings' if measures else 'None'}",
+            f"- Activity count: {len(primary_today_activities)} primary",
+            *(
+                [
+                    "- Training load history: "
+                    f"{_training_load_history_status(training_load_metrics.history_label)}"
+                ]
+                if training_load_metrics is not None
+                else []
+            ),
             f"- Missing or partial data: {_missing_data_summary(withings_steps, measures, primary_today_activities)}",
             "",
             "## Machine Handoff",
             "",
             _ai_handoff(
                 activities=primary_today_activities,
-                activity_metrics=activity_metrics,
                 total_duration_min=logged_duration_min,
                 withings_steps_text=withings_steps_text,
                 walking_distance_km=walking_distance_km,
                 swimming_duration_min=swimming_duration_min,
+                swimming_distance_km=swimming_distance_km,
                 strength_count=len(strength_activities),
                 strength_duration_min=strength_duration_min,
-                recovery_metrics=recovery_metrics,
-                walking_metrics=walking_metrics,
+                suunto_metrics=suunto_metrics,
+                training_load_metrics=training_load_metrics,
+                activity_trends=activity_trends,
+                training_load_trend=training_load_trend,
                 weight_metrics=weight_metrics,
                 bmi=_bmi_value(
                     _latest_measures_by_type(measures).get("weight"),
@@ -585,20 +666,6 @@ def _render_daily_state(state: DailyState) -> str:
     return "\n".join(lines)
 
 
-def _snapshot_activity_status(activity_metrics: ActivityMetrics, *, separator: str = " · ") -> str:
-    return (
-        f"{activity_metrics.label}{separator}score {_format_activity_score(activity_metrics.score)}"
-        f"{separator}trend {activity_metrics.trend.lower()}"
-    )
-
-
-def _snapshot_recovery_status(recovery_metrics: RecoveryMetrics, *, separator: str = " · ") -> str:
-    return (
-        f"{recovery_metrics.compatibility}{separator}fatigue risk {recovery_metrics.fatigue_risk.lower()}"
-        f"{separator}load {recovery_metrics.load_score:.1f}"
-    )
-
-
 def _snapshot_movement_status(
     withings_steps: int | None,
     walking_distance_km: float,
@@ -608,13 +675,18 @@ def _snapshot_movement_status(
     formatted_steps: str | None = None,
     separator: str = " · ",
 ) -> str:
-    parts = [f"{formatted_steps or _format_step_count(withings_steps)} steps"]
+    step_part = f"{formatted_steps or _format_step_count(withings_steps)} steps"
+    movement_parts: list[str] = []
     if walking_distance_km > 0:
-        parts.append(f"{walking_distance_km:.2f} km walk")
+        movement_parts.append(f"{walking_distance_km:.2f} km walk")
     if ride_distance_km > 0:
-        parts.append(f"{ride_distance_km:.2f} km ride")
+        movement_parts.append(f"{ride_distance_km:.2f} km ride")
     if swimming_duration_min > 0:
-        parts.append(f"{swimming_duration_min:.0f} min swim")
+        movement_parts.append(f"{swimming_duration_min:.0f} min swim")
+    if withings_steps is None and walking_distance_km <= 0 and movement_parts:
+        parts = [*movement_parts, "steps unavailable"]
+    else:
+        parts = [step_part, *movement_parts]
     return separator.join(parts)
 
 
@@ -644,6 +716,169 @@ def _snapshot_body_status(weight_metrics: dict[str, str], *, separator: str = " 
     return f"{weight_metrics['current_weight']}{separator}{weight_metrics['trend'].lower()}"
 
 
+def _suunto_daily_metrics(activities: list[NormalizedActivity]) -> SuuntoDailyMetrics:
+    suunto_activities = [activity for activity in activities if activity.source == "suunto"]
+    tss_scores = [
+        activity.tss_score for activity in suunto_activities if activity.tss_score is not None
+    ]
+    energy_values = [
+        activity.energy_kcal for activity in suunto_activities if activity.energy_kcal is not None
+    ]
+    weighted_hr_activities = [
+        activity
+        for activity in suunto_activities
+        if activity.avg_hr is not None and activity.duration_min > 0
+    ]
+    max_hr_values = [
+        activity.max_hr for activity in suunto_activities if activity.max_hr is not None
+    ]
+    weighted_duration = sum(activity.duration_min for activity in weighted_hr_activities)
+    return SuuntoDailyMetrics(
+        total_tss=sum(tss_scores) if tss_scores else None,
+        total_energy_kcal=sum(energy_values) if energy_values else None,
+        avg_hr=(
+            sum(activity.avg_hr * activity.duration_min for activity in weighted_hr_activities)
+            / weighted_duration
+            if weighted_duration > 0
+            else None
+        ),
+        max_hr=max(max_hr_values) if max_hr_values else None,
+    )
+
+
+def _training_load_metrics(
+    activities: list[NormalizedActivity],
+    target_date: date,
+) -> TrainingLoadMetrics | None:
+    daily_tss: dict[date, float] = {}
+    for activity in activities:
+        if activity.source != "suunto" or activity.tss_score is None:
+            continue
+        activity_date = _activity_date(activity.start_time)
+        if activity_date is None or activity_date > target_date:
+            continue
+        daily_tss[activity_date] = daily_tss.get(activity_date, 0.0) + activity.tss_score
+
+    if not daily_tss:
+        return None
+
+    ctl = 0.0
+    atl = 0.0
+    ctl_alpha = 1 - math.exp(-1 / 42)
+    atl_alpha = 1 - math.exp(-1 / 7)
+    current_date = min(daily_tss)
+    state_date = target_date
+    while current_date <= state_date:
+        load = daily_tss.get(current_date, 0.0)
+        ctl += ctl_alpha * (load - ctl)
+        atl += atl_alpha * (load - atl)
+        current_date += timedelta(days=1)
+
+    tsb = ctl - atl
+    history_days = (target_date - min(daily_tss)).days + 1
+    return TrainingLoadMetrics(
+        today_tss=daily_tss.get(target_date, 0.0),
+        ctl=ctl,
+        atl=atl,
+        tsb=tsb,
+        tsb_label=_tsb_label(tsb),
+        history_days=history_days,
+        history_label=_training_load_history_label(history_days),
+    )
+
+
+def _tsb_label(tsb: float) -> str:
+    if tsb < -30:
+        return "Too high intensity"
+    if tsb < -10:
+        return "Fatigue / Improving fitness"
+    if tsb < 15:
+        return "Training balance"
+    return "Losing fitness or recovering"
+
+
+def _training_load_history_label(history_days: int) -> str:
+    if history_days < 7:
+        return "Training load history limited; ATL/TSB warming up"
+    if history_days < 42:
+        return "Training load history limited; CTL warming up"
+    return "Training load baseline available"
+
+
+def _training_load_history_status(label: str) -> str:
+    prefix = "Training load history "
+    status = label.removeprefix(prefix)
+    return status[:1].upper() + status[1:]
+
+
+def _suunto_summary_rows(
+    metrics: SuuntoDailyMetrics,
+    training_load: TrainingLoadMetrics | None,
+) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    load_parts: list[str] = []
+    if training_load is not None:
+        load_parts.append(f"TSS {training_load.today_tss:.1f}")
+        load_parts.extend(
+            [
+                f"CTL {training_load.ctl:.1f}",
+                f"ATL {training_load.atl:.1f}",
+                f"TSB {training_load.tsb:.1f}",
+                _training_load_snapshot_label(training_load),
+            ]
+        )
+    elif metrics.total_tss is not None:
+        load_parts.append(f"TSS {metrics.total_tss:.1f}")
+    if load_parts:
+        rows.append(("Load", " · ".join(load_parts)))
+
+    hr_parts: list[str] = []
+    if metrics.avg_hr is not None:
+        hr_parts.append(f"avg {metrics.avg_hr:.0f}")
+    if metrics.max_hr is not None:
+        hr_parts.append(f"max {metrics.max_hr:.0f}")
+    if hr_parts:
+        rows.append(("HR", " · ".join(hr_parts)))
+
+    if metrics.total_energy_kcal is not None:
+        rows.append(("Energy", f"{metrics.total_energy_kcal:.0f} kcal"))
+    return rows
+
+
+def _training_load_snapshot_label(metrics: TrainingLoadMetrics) -> str:
+    if metrics.history_days < 7:
+        return "warming up"
+    return metrics.tsb_label
+
+
+def _terminal_suunto_summary_rows(
+    metrics: SuuntoDailyMetrics,
+    training_load: TrainingLoadMetrics | None,
+) -> list[tuple[str, str]]:
+    return [
+        (label, value.replace(" · ", " / "))
+        for label, value in _suunto_summary_rows(metrics, training_load)
+    ]
+
+
+def _activity_metric_parts(activity: NormalizedActivity) -> list[str]:
+    parts: list[str] = []
+    if activity.step_count > 0:
+        parts.append(f"{activity.step_count:,} steps")
+    if activity.energy_kcal is not None:
+        parts.append(f"{activity.energy_kcal:.0f} kcal")
+    if activity.avg_hr is not None and activity.max_hr is not None:
+        parts.append(f"HR {activity.avg_hr:.0f}-{activity.max_hr:.0f}")
+    elif activity.avg_hr is not None:
+        parts.append(f"HR avg {activity.avg_hr:.0f}")
+    elif activity.max_hr is not None:
+        parts.append(f"HR max {activity.max_hr:.0f}")
+    if activity.tss_score is not None:
+        method = f"({activity.tss_method.lower()})" if activity.tss_method else ""
+        parts.append(f"TSS{method} {activity.tss_score:.1f}")
+    return parts
+
+
 def _render_section_title(console: Any, title: str) -> None:
     console.print()
     console.print(title, style="bold cyan")
@@ -667,12 +902,6 @@ def _render_kv_block(console: Any, rows: list[tuple[str, str]], *, indent: int =
         continuation_prefix = f"{prefix}{'':<{label_width}}  "
         for line in wrapped_value[1:]:
             console.print(_styled_terminal_line(continuation_prefix, line, label=label))
-
-
-def _render_bullets(console: Any, items: list[str], *, indent: int = 0) -> None:
-    prefix = " " * indent
-    for item in items:
-        console.print(_styled_terminal_line(f"{prefix}• ", item))
 
 
 def _styled_terminal_line(prefix: str, value: str, *, label: str = "") -> Any:
@@ -702,8 +931,6 @@ def _styled_terminal_value(value: str, *, label: str = "") -> Any:
     _stylize_matches(text, r"\bNear \d+d avg\b", "green")
     _stylize_matches(text, r"\b(Above|Below) \d+d avg\b", "yellow")
     _stylize_matches(text, r"\bNo baseline\b", "dim")
-    if label == "Fatigue risk" or label == "Recovery":
-        _stylize_matches(text, r"\b[Hh]igh\b", "yellow")
     return text
 
 
@@ -796,6 +1023,7 @@ def _terminal_distance_activity(activity: NormalizedActivity) -> Any:
     text.append(_format_distance(activity.distance_km), style="cyan")
     text.append(" / ")
     text.append(f"{activity.duration_min:.0f} min", style="cyan")
+    _append_terminal_activity_metrics(text, activity)
     return text
 
 
@@ -807,6 +1035,7 @@ def _terminal_duration_activity(activity: NormalizedActivity) -> Any:
     text.append(_terminal_activity_source(activity), style="dim")
     text.append(" / ")
     text.append(f"{activity.duration_min:.0f} min", style="cyan")
+    _append_terminal_activity_metrics(text, activity)
     return text
 
 
@@ -817,7 +1046,14 @@ def _terminal_workout_header(activity: NormalizedActivity) -> Any:
     text.append(_display_activity_name(activity), style="bold")
     text.append(" / ")
     text.append(f"{activity.duration_min:.0f} min", style="cyan")
+    _append_terminal_activity_metrics(text, activity)
     return text
+
+
+def _append_terminal_activity_metrics(text: Any, activity: NormalizedActivity) -> None:
+    for metric in _activity_metric_parts(activity):
+        text.append(" / ")
+        text.append(metric, style="cyan")
 
 
 def _terminal_activity_source(activity: NormalizedActivity) -> str:
@@ -848,10 +1084,6 @@ def _format_terminal_step_count(value: int | None) -> str:
 
 def _format_terminal_volume(value: float) -> str:
     return f"{value:,.0f} kg" if value else "0 kg"
-
-
-def _format_terminal_driver(value: str) -> str:
-    return re.sub(r"\b(\d{4,})(?= kg\b)", lambda match: f"{int(match.group(1)):,}", value)
 
 
 def _trend_direction(trend: str, today: float | None, avg_30d: float | None) -> str:
@@ -888,12 +1120,6 @@ def _format_percent_diff(value: float) -> str:
     if rounded > 0:
         return f"+{rounded}%"
     return f"{rounded}%"
-
-
-def _walking_average_value(value: str) -> float | None:
-    if value == "Unknown":
-        return None
-    return _float_value(value.split(" ", 1)[0])
 
 
 def _weight_value(value: str) -> float | None:
@@ -1063,169 +1289,27 @@ def _missing_data_summary(
     return "; ".join(missing)
 
 
-def _activity_level(total_distance_km: float, total_duration_min: float, activity_count: int) -> str:
-    if activity_count == 0:
-        return "None"
-    if total_distance_km <= 5 and total_duration_min <= 60:
-        return "Light"
-    if total_distance_km <= 12 and total_duration_min <= 120:
-        return "Moderate"
-    return "High"
-
-
-def _activity_effort_totals(
+def _terminal_data_coverage_rows(
     activities: list[NormalizedActivity],
-    withings_activity_summaries: list[dict[str, str]],
-) -> ActivityEffortTotals:
-    logged_non_swim_distance_km = sum(
-        activity.distance_km or 0.0
-        for activity in activities
-        if activity.activity_type != "swim"
-    )
-    logged_duration_min = sum(activity.duration_min for activity in activities)
-    unlogged_steps = _unlogged_step_count(activities, withings_activity_summaries)
-    unlogged_step_distance_km = unlogged_steps / WALK_STEPS_PER_KM
-    unlogged_step_duration_min = unlogged_step_distance_km * WALK_MIN_PER_KM
-    return ActivityEffortTotals(
-        non_swim_distance_km=logged_non_swim_distance_km + unlogged_step_distance_km,
-        duration_min=logged_duration_min + unlogged_step_duration_min,
-        activity_count=len(activities) + (1 if unlogged_steps > 0 else 0),
-    )
-
-
-def _unlogged_step_count(
-    activities: list[NormalizedActivity],
-    withings_activity_summaries: list[dict[str, str]],
-) -> int:
-    total_steps = _withings_step_count(withings_activity_summaries)
-    if total_steps is None:
-        return 0
-    logged_steps = sum(_logged_step_equivalent(activity) for activity in activities)
-    return max(0, total_steps - logged_steps)
-
-
-def _logged_step_equivalent(activity: NormalizedActivity) -> int:
-    if activity.activity_type not in {"walk", "run"}:
-        return 0
-    if activity.step_count > 0:
-        return activity.step_count
-    if activity.distance_km is None:
-        return 0
-    steps_per_km = RUN_STEPS_PER_KM if activity.activity_type == "run" else WALK_STEPS_PER_KM
-    return round(activity.distance_km * steps_per_km)
-
-
-def _activity_metrics(
-    activities: list[NormalizedActivity],
-    historical_activities: list[NormalizedActivity],
-    historical_withings_activity_summaries: list[dict[str, str]],
-    target_date: date,
-    *,
-    effort_totals: ActivityEffortTotals,
-) -> ActivityMetrics:
-    current_7d = _average_daily_activity_score(
-        historical_activities,
-        historical_withings_activity_summaries,
-        target_date,
-        days=7,
-    )
-    previous_7d = _average_daily_activity_score(
-        historical_activities,
-        historical_withings_activity_summaries,
-        target_date - _date_delta(7),
-        days=7,
-    )
-    avg_30d = _average_daily_activity_score(
-        historical_activities,
-        historical_withings_activity_summaries,
-        target_date,
-        days=30,
-    )
-    return ActivityMetrics(
-        label=_activity_level(
-            effort_totals.non_swim_distance_km,
-            effort_totals.duration_min,
-            effort_totals.activity_count,
-        ),
-        score=_activity_score_for_totals(effort_totals),
-        avg_7d=current_7d,
-        avg_30d=avg_30d,
-        trend=_activity_score_trend(current_7d, previous_7d),
-    )
-
-
-def _activity_score_for_totals(effort_totals: ActivityEffortTotals) -> float | None:
-    if effort_totals.activity_count == 0:
-        return None
-    return effort_totals.non_swim_distance_km + (effort_totals.duration_min / 12)
-
-
-def _average_daily_activity_score(
-    activities: list[NormalizedActivity],
-    withings_activity_summaries: list[dict[str, str]],
-    end_date: date,
-    *,
-    days: int,
-) -> float | None:
-    start_date = end_date - _date_delta(days - 1)
-    activities_in_window = [
-        activity
-        for activity in activities
-        if (activity_date := _activity_date(activity.start_time)) is not None
-        and start_date <= activity_date <= end_date
+    withings_steps: int | None,
+    measures: list[dict[str, str]],
+    training_load: TrainingLoadMetrics | None,
+) -> list[tuple[str, str]]:
+    rows = [
+        ("Workout source", _activity_sources(activities)),
+        ("Step source", "Withings" if withings_steps is not None else "None"),
+        ("Body source", "Withings" if measures else "None"),
+        ("Activity count", f"{len(activities)} primary"),
     ]
-    summaries_in_window = [
-        summary
-        for summary in withings_activity_summaries
-        if (summary_date := _summary_date(summary)) is not None
-        and start_date <= summary_date <= end_date
-    ]
-    if not activities_in_window and not summaries_in_window:
-        return None
-
-    total_score = 0.0
-    for offset in range(days):
-        score_date = start_date + _date_delta(offset)
-        score = _activity_score_for_totals(
-            _activity_effort_totals(
-                [
-                    activity
-                    for activity in activities_in_window
-                    if _activity_date(activity.start_time) == score_date
-                ],
-                [
-                    summary
-                    for summary in summaries_in_window
-                    if _summary_date(summary) == score_date
-                ],
+    if training_load is not None:
+        rows.append(
+            (
+                "Training load history",
+                _training_load_history_status(training_load.history_label),
             )
         )
-        total_score += score or 0.0
-    return total_score / days
-
-
-def _format_activity_score(value: float | None) -> str:
-    if value is None:
-        return "unavailable"
-    return f"{value:.1f}"
-
-
-def _format_average_activity_score(value: float | None) -> str:
-    if value is None:
-        return "Unknown"
-    return f"{value:.1f}/day"
-
-
-def _activity_score_trend(current_7d: float | None, previous_7d: float | None) -> str:
-    if current_7d is None or previous_7d is None:
-        return "Unknown"
-
-    difference = current_7d - previous_7d
-    if difference <= -1:
-        return "Decreasing"
-    if difference >= 1:
-        return "Increasing"
-    return "Stable"
+    rows.append(("Missing data", _missing_data_summary(withings_steps, measures, activities)))
+    return rows
 
 
 def _withings_step_count(activity_summaries: list[dict[str, str]]) -> int | None:
@@ -1242,97 +1326,7 @@ def _withings_step_count(activity_summaries: list[dict[str, str]]) -> int | None
 def _format_step_count(value: int | None) -> str:
     if value is None:
         return "unavailable"
-    return str(value)
-
-
-def _recovery_metrics(
-    activities: list[NormalizedActivity],
-    hevy_sets: list[dict[str, str]],
-    *,
-    walking_distance_km: float,
-    swimming_duration_min: float,
-) -> RecoveryMetrics:
-    strength_activities = [activity for activity in activities if activity.activity_type == "strength"]
-    strength_duration_min = sum(activity.duration_min for activity in strength_activities)
-    ride_distance_km = sum(
-        activity.distance_km or 0.0
-        for activity in activities
-        if activity.activity_type == "ride"
-    )
-    run_distance_km = sum(
-        activity.distance_km or 0.0
-        for activity in activities
-        if activity.activity_type == "run"
-    )
-    other_distance_km = sum(
-        activity.distance_km or 0.0
-        for activity in activities
-        if activity.activity_type not in {"walk", "swim", "strength", "ride", "run"}
-    )
-    strength_sets = _sets_for_strength_activities(strength_activities, hevy_sets)
-    total_sets = len(strength_sets)
-    total_volume_kg = sum(_float_value(set_row.get("volume_kg", "")) for set_row in strength_sets)
-    exercise_count = len({set_row.get("exercise", "") for set_row in strength_sets if set_row.get("exercise")})
-    full_body = any(_is_full_body_workout(activity) for activity in strength_activities)
-    subjective_all_out = _has_subjective_all_out(strength_activities, strength_sets)
-
-    walking_load = walking_distance_km * 1.0
-    swimming_load = swimming_duration_min * 0.12
-    strength_load = (strength_duration_min * 0.12) + (total_sets * 0.18) + (total_volume_kg / 8000)
-    ride_load = ride_distance_km * 0.35
-    run_load = run_distance_km * 1.25
-    other_load = other_distance_km * 0.80
-    total_load = walking_load + swimming_load + strength_load + ride_load + run_load + other_load
-
-    active_activity_types = sum(
-        [
-            walking_distance_km > 0,
-            swimming_duration_min > 0,
-            strength_duration_min > 0,
-            ride_distance_km > 0,
-            run_distance_km > 0,
-            other_distance_km > 0,
-        ]
-    )
-    if active_activity_types >= 3:
-        total_load *= 1.30
-    elif active_activity_types >= 2:
-        total_load *= 1.15
-
-    compatibility = _recovery_label(total_load)
-    if full_body and (total_sets >= 60 or strength_duration_min >= 90):
-        compatibility = _downgrade_recovery_label(compatibility)
-    if subjective_all_out:
-        compatibility = _downgrade_recovery_label(compatibility)
-    fatigue_risk = _fatigue_risk(compatibility, subjective_all_out)
-
-    return RecoveryMetrics(
-        compatibility=compatibility,
-        fatigue_risk=fatigue_risk,
-        load_score=total_load,
-        drivers=_recovery_drivers(
-            walking_distance_km=walking_distance_km,
-            swimming_duration_min=swimming_duration_min,
-            ride_distance_km=ride_distance_km,
-            run_distance_km=run_distance_km,
-            other_distance_km=other_distance_km,
-            strength_duration_min=strength_duration_min,
-            strength_workout_count=len(strength_activities),
-            total_sets=total_sets,
-            total_volume_kg=total_volume_kg,
-            exercise_count=exercise_count,
-            full_body=full_body,
-            mixed_activity=active_activity_types >= 2,
-            subjective_all_out=subjective_all_out,
-            strength_details_missing=bool(strength_activities) and not strength_sets,
-        ),
-        suggested_next_day=_recovery_suggestions(
-            compatibility,
-            strength_duration_min > 0,
-            walking_distance_km > 0,
-            active_activity_types >= 2,
-        ),
-    )
+    return f"{value:,}"
 
 
 def _sets_for_strength_activities(
@@ -1345,180 +1339,6 @@ def _sets_for_strength_activities(
         for set_row in hevy_sets
         if set_row.get("workout_source_id") in workout_ids
     ]
-
-
-def _recovery_label(load_score: float) -> str:
-    if load_score < 8:
-        return "Good"
-    if load_score <= 12:
-        return "Acceptable"
-    if load_score <= 25:
-        return "Caution"
-    return "Poor"
-
-
-def _downgrade_recovery_label(label: str) -> str:
-    order = ["Good", "Acceptable", "Caution", "Poor"]
-    index = order.index(label)
-    return order[min(index + 1, len(order) - 1)]
-
-
-def _fatigue_risk(compatibility: str, subjective_all_out: bool) -> str:
-    if compatibility == "Poor" or subjective_all_out:
-        return "High"
-    if compatibility == "Caution":
-        return "Moderate"
-    if compatibility == "Acceptable":
-        return "Low"
-    return "Low"
-
-
-def _recovery_drivers(
-    *,
-    walking_distance_km: float,
-    swimming_duration_min: float,
-    ride_distance_km: float,
-    run_distance_km: float,
-    other_distance_km: float,
-    strength_duration_min: float,
-    strength_workout_count: int,
-    total_sets: int,
-    total_volume_kg: float,
-    exercise_count: int,
-    full_body: bool,
-    mixed_activity: bool,
-    subjective_all_out: bool,
-    strength_details_missing: bool,
-) -> list[str]:
-    drivers: list[str] = []
-    if strength_duration_min > 0:
-        strength_parts = [f"{strength_duration_min:.0f} min"]
-        if total_sets > 0:
-            strength_parts.append(f"{total_sets} sets")
-        if exercise_count > 0:
-            strength_parts.append(f"{exercise_count} exercises")
-        if total_volume_kg > 0:
-            strength_parts.append(_format_volume(total_volume_kg))
-        label = "Full-body strength" if full_body else "Strength"
-        drivers.append(f"{label}: {', '.join(strength_parts)}")
-    movement_parts: list[str] = []
-    if walking_distance_km > 0:
-        movement_parts.append(f"{walking_distance_km:.2f} km walking")
-    if ride_distance_km > 0:
-        movement_parts.append(f"{ride_distance_km:.2f} km cycling")
-    if run_distance_km > 0:
-        movement_parts.append(f"{run_distance_km:.2f} km running")
-    if swimming_duration_min > 0:
-        movement_parts.append(f"{swimming_duration_min:.0f} min swimming")
-    if other_distance_km > 0:
-        movement_parts.append(f"{other_distance_km:.2f} km other activity")
-    if movement_parts:
-        drivers.append(f"Additional movement: {' + '.join(movement_parts)}")
-    if mixed_activity:
-        drivers.append(f"Mixed load day: {_mixed_activity_driver(walking_distance_km, swimming_duration_min, strength_workout_count, ride_distance_km, run_distance_km, other_distance_km)}")
-    if subjective_all_out:
-        drivers.append("Subjective all-out effort noted")
-    if strength_details_missing:
-        drivers.append("Strength details unavailable; score uses duration only")
-    if not drivers:
-        drivers.append("No activity load recorded")
-    return drivers[:5]
-
-
-def _mixed_activity_driver(
-    walking_distance_km: float,
-    swimming_duration_min: float,
-    strength_workout_count: int,
-    ride_distance_km: float,
-    run_distance_km: float,
-    other_distance_km: float,
-) -> str:
-    activity_types: list[str] = []
-    if walking_distance_km > 0:
-        activity_types.append("walking")
-    if swimming_duration_min > 0:
-        activity_types.append("swimming")
-    if strength_workout_count > 0:
-        activity_types.append("strength")
-    if ride_distance_km > 0:
-        activity_types.append("cycling")
-    if run_distance_km > 0:
-        activity_types.append("running")
-    if other_distance_km > 0:
-        activity_types.append("other")
-    return " + ".join(activity_types)
-
-
-def _recovery_suggestions(
-    compatibility: str,
-    strength_training: bool,
-    walking_today: bool,
-    mixed_activity: bool,
-) -> list[str]:
-    if compatibility == "Poor":
-        load_reason = (
-            "Recovery load is elevated due to strength volume plus additional movement"
-            if mixed_activity
-            else "Recovery load is elevated due to strength volume"
-        )
-        suggestions = [
-            "Avoid stacking another high-volume strength day",
-            _light_movement_suggestion(walking_today),
-            load_reason,
-        ]
-    elif compatibility == "Caution":
-        suggestions = [
-            "Avoid stacking hard sessions",
-            _light_movement_suggestion(walking_today),
-            "Recovery load is elevated relative to baseline",
-        ]
-    elif compatibility == "Acceptable":
-        suggestions = ["Keep next session moderate", "Watch soreness and sleep quality"]
-    else:
-        suggestions = ["Normal activity is compatible with current load"]
-    if strength_training and "Strength load present in current day" not in suggestions:
-        suggestions.append("Strength load present in current day")
-    return suggestions
-
-
-def _light_movement_suggestion(walking_today: bool) -> str:
-    if walking_today:
-        return "Treat long walking as optional if fatigue remains high"
-    return "Keep low-impact movement light if fatigue remains high"
-
-
-def _is_full_body_workout(activity: NormalizedActivity) -> bool:
-    name = _display_activity_name(activity).lower()
-    return "full body" in name or "full-body" in name or "全身" in name
-
-
-def _has_subjective_all_out(
-    strength_activities: list[NormalizedActivity],
-    strength_sets: list[dict[str, str]],
-) -> bool:
-    terms = [
-        "all-out",
-        "all out",
-        "failure",
-        "max effort",
-        "hard",
-        "exhausted",
-        "限界",
-        "オールアウト",
-        "追い込んだ",
-        "きつい",
-    ]
-    text = " ".join(
-        [
-            *(activity.name for activity in strength_activities),
-            *(activity.notes for activity in strength_activities),
-            *(set_row.get("notes", "") for set_row in strength_sets),
-            *(set_row.get("workout_name", "") for set_row in strength_sets),
-        ]
-    ).lower()
-    if any(term in text for term in terms):
-        return True
-    return any(_float_value(set_row.get("rpe", "")) >= 9.5 for set_row in strength_sets)
 
 
 def _weight_metrics(measures: list[dict[str, str]], target_date: date) -> dict[str, str]:
@@ -1623,57 +1443,288 @@ def _average_estimated_deficit(weights: list[dict[str, str]], end_date: date, *,
     return sum(values) / len(values)
 
 
-def _walking_metrics(activities: list[NormalizedActivity], target_date: date) -> dict[str, str]:
-    current_7d = _average_daily_walking_distance(activities, target_date, days=7)
-    previous_7d = _average_daily_walking_distance(activities, target_date - _date_delta(7), days=7)
-    avg_30d = _average_daily_walking_distance(activities, target_date, days=30)
+def _activity_trend_metrics(
+    today_activities: list[NormalizedActivity],
+    activities: list[NormalizedActivity],
+    target_date: date,
+) -> list[ActivityTrendMetric]:
+    primary_type = _primary_activity_type(today_activities)
+    if primary_type is None:
+        return []
+
+    today_same_type = [
+        activity for activity in today_activities if activity.activity_type == primary_type
+    ]
+    rows: list[ActivityTrendMetric] = []
+    distance = sum(
+        activity.distance_km or 0.0
+        for activity in today_same_type
+        if primary_type != "swim" or activity.source == "suunto"
+    )
+    duration = sum(activity.duration_min for activity in today_same_type)
+    label = _activity_type_label(primary_type)
+
+    if distance > 0:
+        distance_history = _activity_metric_history(
+            activities,
+            target_date,
+            primary_type,
+            metric="distance",
+        )
+        rows.append(
+            ActivityTrendMetric(
+                label=f"{label} distance",
+                today=distance,
+                total_7d=distance_history["total_7d"],
+                weekly_avg_30d=distance_history["weekly_avg_30d"],
+                unit="km",
+                direction=_activity_trend_direction(
+                    primary_type,
+                    distance_history,
+                ),
+            )
+        )
+    duration_history = _activity_metric_history(
+        activities,
+        target_date,
+        primary_type,
+        metric="duration",
+    )
+    rows.append(
+        ActivityTrendMetric(
+            label=f"{label} duration",
+            today=duration,
+            total_7d=duration_history["total_7d"],
+            weekly_avg_30d=duration_history["weekly_avg_30d"],
+            unit="min",
+            direction=_activity_trend_direction(
+                primary_type,
+                duration_history,
+            ),
+        )
+    )
+    return rows
+
+
+def _training_load_trend_metric(
+    activities: list[NormalizedActivity],
+    target_date: date,
+) -> ActivityTrendMetric | None:
+    tss_activities = [
+        activity
+        for activity in activities
+        if activity.source == "suunto"
+        and activity.tss_score is not None
+        and (activity_date := _activity_date(activity.start_time)) is not None
+        and activity_date <= target_date
+    ]
+    if not tss_activities:
+        return None
+
+    trailing_7 = [
+        activity
+        for activity in tss_activities
+        if (_activity_date(activity.start_time) or date.min)
+        >= target_date - _date_delta(6)
+    ]
+    trailing_30 = [
+        activity
+        for activity in tss_activities
+        if (_activity_date(activity.start_time) or date.min)
+        >= target_date - _date_delta(29)
+    ]
+    today_tss = sum(
+        activity.tss_score or 0.0
+        for activity in tss_activities
+        if _activity_date(activity.start_time) == target_date
+    )
+    total_7d = sum(activity.tss_score or 0.0 for activity in trailing_7)
+    total_30d = sum(activity.tss_score or 0.0 for activity in trailing_30)
+    history_days = (
+        target_date
+        - min(
+            _activity_date(activity.start_time) or target_date
+            for activity in tss_activities
+        )
+    ).days + 1
+    weekly_avg_30d = total_30d * 7 / 30
+    return ActivityTrendMetric(
+        label="TSS",
+        today=today_tss,
+        total_7d=total_7d,
+        weekly_avg_30d=weekly_avg_30d,
+        unit="TSS",
+        direction=_training_load_trend_direction(
+            sessions_30d=len(trailing_30),
+            history_days=history_days,
+            total_7d=total_7d,
+            weekly_avg_30d=weekly_avg_30d,
+        ),
+    )
+
+
+def _primary_activity_type(activities: list[NormalizedActivity]) -> str | None:
+    duration_by_type: dict[str, float] = {}
+    for activity in activities:
+        duration_by_type[activity.activity_type] = (
+            duration_by_type.get(activity.activity_type, 0.0) + activity.duration_min
+        )
+    if not duration_by_type:
+        return None
+    return max(duration_by_type, key=duration_by_type.get)
+
+
+def _activity_type_label(activity_type: str) -> str:
     return {
-        "avg_7d": _format_average_distance(current_7d),
-        "avg_30d": _format_average_distance(avg_30d),
-        "trend": _distance_trend(current_7d, previous_7d),
-    }
+        "walk": "Walking",
+        "run": "Running",
+        "ride": "Cycling",
+        "swim": "Swimming",
+        "strength": "Strength",
+    }.get(activity_type, "Workout")
 
 
-def _average_daily_walking_distance(
+def _activity_metric_history(
     activities: list[NormalizedActivity],
     end_date: date,
+    activity_type: str,
     *,
-    days: int,
-) -> float | None:
-    start_date = end_date - _date_delta(days - 1)
-    activities_in_window = [
+    metric: str,
+) -> dict[str, float | int]:
+    activities_to_date = [
         activity
         for activity in activities
         if (activity_date := _activity_date(activity.start_time)) is not None
-        and start_date <= activity_date <= end_date
+        and activity_date <= end_date
+        and activity.activity_type == activity_type
+        and _activity_metric_value(activity, metric) is not None
     ]
-    if not activities_in_window:
-        return None
-
-    total_walking_distance = sum(
-        activity.distance_km or 0.0
-        for activity in activities_in_window
-        if _is_walking_activity(activity)
+    trailing_7 = [
+        activity
+        for activity in activities_to_date
+        if (_activity_date(activity.start_time) or date.min)
+        >= end_date - _date_delta(6)
+    ]
+    trailing_30 = [
+        activity
+        for activity in activities_to_date
+        if (_activity_date(activity.start_time) or date.min)
+        >= end_date - _date_delta(29)
+    ]
+    total_7d = sum(
+        _activity_metric_value(activity, metric) or 0.0
+        for activity in trailing_7
     )
-    return total_walking_distance / days
+    total_30d = sum(
+        _activity_metric_value(activity, metric) or 0.0
+        for activity in trailing_30
+    )
+    return {
+        "total_7d": total_7d,
+        "weekly_avg_30d": total_30d * 7 / 30,
+        "sessions_30d": len(trailing_30),
+        "sessions_all": len(activities_to_date),
+    }
 
 
-def _format_average_distance(value: float | None) -> str:
-    if value is None:
-        return "Unknown"
-    return f"{value:.2f} km/day"
+def _activity_metric_value(
+    activity: NormalizedActivity,
+    metric: str,
+) -> float | None:
+    if metric == "distance":
+        if activity.activity_type == "swim" and activity.source != "suunto":
+            return None
+        return activity.distance_km
+    if metric == "duration":
+        return activity.duration_min if activity.duration_min > 0 else None
+    return None
 
 
-def _distance_trend(current_7d: float | None, previous_7d: float | None) -> str:
-    if current_7d is None or previous_7d is None:
-        return "Unknown"
+def _activity_trend_direction(
+    activity_type: str,
+    history: dict[str, float | int],
+) -> str:
+    sessions_all = int(history["sessions_all"])
+    sessions_30d = int(history["sessions_30d"])
+    if sessions_all == 1:
+        return f"First recorded {_activity_type_noun(activity_type)}"
+    if sessions_30d < 3:
+        return "Baseline forming"
 
-    difference = current_7d - previous_7d
-    if difference <= -0.5:
-        return "Decreasing"
-    if difference >= 0.5:
-        return "Increasing"
-    return "Stable"
+    total_7d = float(history["total_7d"])
+    weekly_avg_30d = float(history["weekly_avg_30d"])
+    if weekly_avg_30d <= 0:
+        return "Baseline forming"
+    difference = total_7d - weekly_avg_30d
+    percent_diff = difference / weekly_avg_30d * 100
+    if abs(percent_diff) < 10:
+        return "Near 30-day weekly average"
+    direction = "Above" if percent_diff > 0 else "Below"
+    return f"{direction} 30-day weekly average ({_format_percent_diff(percent_diff)})"
+
+
+def _training_load_trend_direction(
+    *,
+    sessions_30d: int,
+    history_days: int,
+    total_7d: float,
+    weekly_avg_30d: float,
+) -> str:
+    if sessions_30d < 3:
+        return "Baseline forming"
+    if history_days < 42:
+        return "Training load history limited"
+    if weekly_avg_30d <= 0:
+        return "Baseline forming"
+    percent_diff = (total_7d - weekly_avg_30d) / weekly_avg_30d * 100
+    if abs(percent_diff) < 10:
+        return "Near 30-day weekly average"
+    direction = "Above" if percent_diff > 0 else "Below"
+    return f"{direction} 30-day weekly average ({_format_percent_diff(percent_diff)})"
+
+
+def _activity_type_noun(activity_type: str) -> str:
+    return {
+        "walk": "walk",
+        "run": "run",
+        "ride": "ride",
+        "swim": "swim",
+        "strength": "strength workout",
+    }.get(activity_type, "workout")
+
+
+def _format_activity_trend_value(value: float, unit: str) -> str:
+    if unit == "km":
+        return f"{value:.2f} km"
+    if unit == "min":
+        return f"{value:.0f} min"
+    return f"{value:.1f} TSS"
+
+
+def _format_activity_trend_total(value: float, unit: str) -> str:
+    if unit == "km":
+        return f"{value:.2f} km/week"
+    if unit == "min":
+        return f"{value:.0f} min/week"
+    return f"{value:.1f} TSS/week"
+
+
+def _format_activity_trend_weekly_average(value: float, unit: str) -> str:
+    if unit == "km":
+        return f"{value:.2f} km/week"
+    if unit == "min":
+        return f"{value:.0f} min/week"
+    return f"{value:.1f} TSS/week"
+
+
+def _render_activity_trend_row(metric: ActivityTrendMetric) -> str:
+    return (
+        f"| {metric.label} | "
+        f"{_format_activity_trend_value(metric.today, metric.unit)} | "
+        f"{_format_activity_trend_total(metric.total_7d, metric.unit)} | "
+        f"{_format_activity_trend_weekly_average(metric.weekly_avg_30d, metric.unit)} | "
+        f"{metric.direction} |"
+    )
 
 
 def _format_weight(measure: dict[str, str]) -> str:
@@ -1734,17 +1785,30 @@ def _measure_date(measure: dict[str, str]) -> date | None:
 
 
 def _activity_date(raw_value: str) -> date | None:
-    try:
-        return date.fromisoformat(raw_value[:10])
-    except ValueError:
-        return None
+    parsed = _parse_timestamp(raw_value)
+    return parsed.date() if parsed is not None else None
 
 
-def _summary_date(summary: dict[str, str]) -> date | None:
+def _timestamp_date(raw_value: str, local_timezone: ZoneInfo) -> date | None:
+    parsed = _parse_timestamp(raw_value, local_timezone)
+    return parsed.astimezone(local_timezone).date() if parsed is not None else None
+
+
+def _parse_timestamp(
+    value: str,
+    local_timezone: ZoneInfo | None = None,
+) -> datetime | None:
+    if not value:
+        return None
     try:
-        return date.fromisoformat(summary.get("date", ""))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        if local_timezone is None:
+            return None
+        parsed = parsed.replace(tzinfo=local_timezone)
+    return parsed
 
 
 def _date_delta(days: int) -> timedelta:
@@ -1754,15 +1818,17 @@ def _date_delta(days: int) -> timedelta:
 def _ai_handoff(
     *,
     activities: list[NormalizedActivity],
-    activity_metrics: ActivityMetrics,
     total_duration_min: float,
     withings_steps_text: str,
     walking_distance_km: float,
     swimming_duration_min: float,
+    swimming_distance_km: float,
     strength_count: int,
     strength_duration_min: float,
-    recovery_metrics: RecoveryMetrics,
-    walking_metrics: dict[str, str],
+    suunto_metrics: SuuntoDailyMetrics,
+    training_load_metrics: TrainingLoadMetrics | None,
+    activity_trends: list[ActivityTrendMetric],
+    training_load_trend: ActivityTrendMetric | None,
     weight_metrics: dict[str, str],
     bmi: str | None,
     bmr: str | None,
@@ -1777,28 +1843,24 @@ def _ai_handoff(
             else ""
         )
         activity_sentence = (
-            f"{activity_metrics.label} activity day with {len(activities)} {_pluralize(len(activities), 'primary activity', 'primary activities')}"
+            f"Recorded {len(activities)} {_pluralize(len(activities), 'primary activity', 'primary activities')}"
             f"{walking_part}, {total_duration_min:.0f} min moving time, "
             f"and {withings_steps_text} Withings steps."
         )
-    score_sentence = (
-        f" Activity score is {_format_activity_score(activity_metrics.score)}; "
-        f"activity trend is {activity_metrics.trend}."
-    )
+    swimming_parts: list[str] = []
+    if swimming_duration_min > 0:
+        swimming_parts.append(f"{swimming_duration_min:.0f} min")
+    if swimming_distance_km > 0:
+        swimming_parts.append(f"{swimming_distance_km:.2f} km")
     swimming_sentence = (
-        f" Swimming included {swimming_duration_min:.0f} min."
-        if swimming_duration_min > 0
+        f" Swimming included {' and '.join(swimming_parts)}."
+        if swimming_parts
         else ""
     )
     strength_sentence = (
         f" Strength training included {strength_count} {_pluralize(strength_count, 'workout', 'workouts')} and {strength_duration_min:.0f} min."
         if strength_count > 0
         else ""
-    )
-    recovery_sentence = (
-        f" Recovery compatibility is {recovery_metrics.compatibility}; "
-        f"fatigue risk is {recovery_metrics.fatigue_risk}; "
-        f"load score is {recovery_metrics.load_score:.1f}."
     )
     body_sentences = [
         f"Current weight is {weight_metrics['current_weight']}.",
@@ -1811,20 +1873,84 @@ def _ai_handoff(
     if estimated_deficit is not None:
         body_sentences.append(f"Estimated energy deficit is {estimated_deficit}.")
     return (
-        f"{activity_sentence}{score_sentence}{swimming_sentence}{strength_sentence}{recovery_sentence} "
-        f"{_walking_handoff_sentence(walking_distance_km, walking_metrics)}"
+        f"{activity_sentence}{_suunto_handoff_sentence(suunto_metrics, training_load_metrics)}"
+        f"{swimming_sentence}{strength_sentence} "
+        f"{_activity_trend_handoff_sentence(activity_trends)}"
+        f"{_training_load_trend_handoff_sentence(training_load_trend)}"
         f"{' '.join(body_sentences)}"
     )
+
+
+def _suunto_handoff_sentence(
+    metrics: SuuntoDailyMetrics,
+    training_load: TrainingLoadMetrics | None,
+) -> str:
+    parts: list[str] = []
+    if training_load is not None:
+        parts.append(f"TSS {training_load.today_tss:.1f}")
+    elif metrics.total_tss is not None:
+        parts.append(f"TSS {metrics.total_tss:.1f}")
+    if metrics.avg_hr is not None:
+        parts.append(f"average HR {metrics.avg_hr:.0f}")
+    if metrics.max_hr is not None:
+        parts.append(f"maximum HR {metrics.max_hr:.0f}")
+    if metrics.total_energy_kcal is not None:
+        parts.append(f"activity energy {metrics.total_energy_kcal:.0f} kcal")
+    if training_load is not None:
+        tsb_state = (
+            "warming up"
+            if training_load.history_days < 7
+            else training_load.tsb_label
+        )
+        parts.extend(
+            [
+                f"end-of-day ingest-defined CTL {training_load.ctl:.1f}",
+                f"ATL {training_load.atl:.1f}",
+                f"TSB {training_load.tsb:.1f}",
+                f"TSB state {tsb_state}",
+                training_load.history_label,
+            ]
+        )
+    if not parts:
+        return ""
+    return f" Suunto metrics: {', '.join(parts)}."
 
 
 def _pluralize(count: int, singular: str, plural: str) -> str:
     return singular if count == 1 else plural
 
 
-def _walking_handoff_sentence(walking_distance_km: float, walking_metrics: dict[str, str]) -> str:
-    if walking_distance_km <= 0:
+def _activity_trend_handoff_sentence(
+    metrics: list[ActivityTrendMetric],
+) -> str:
+    if not metrics:
         return ""
-    return f"Walking trend is {walking_metrics['trend']}. "
+    metric = metrics[0]
+    if metric.direction.startswith("First recorded"):
+        return f"{metric.direction} in available history. "
+    if metric.direction == "Baseline forming":
+        return f"{_activity_type_label(_primary_activity_type_from_label(metric.label))} baseline is still forming. "
+    return f"{metric.label} is {metric.direction.lower()}. "
+
+
+def _training_load_trend_handoff_sentence(
+    metric: ActivityTrendMetric | None,
+) -> str:
+    if metric is None:
+        return ""
+    weekly_total = _format_activity_trend_total(metric.total_7d, metric.unit)
+    return f"Training load over trailing 7 days is {weekly_total}; {metric.direction.lower()}. "
+
+
+def _primary_activity_type_from_label(label: str) -> str:
+    prefix = label.split(" ", 1)[0].lower()
+    return {
+        "walking": "walk",
+        "running": "run",
+        "cycling": "ride",
+        "swimming": "swim",
+        "strength": "strength",
+    }.get(prefix, "workout")
 
 
 def _is_walking_activity(activity: NormalizedActivity) -> bool:
@@ -1889,12 +2015,11 @@ def _render_activity_sections(activities: list[NormalizedActivity], hevy_sets: l
 def _render_distance_activities(activities: list[NormalizedActivity]) -> list[str]:
     lines: list[str] = []
     for activity in activities:
+        parts = [_format_distance(activity.distance_km), f"{activity.duration_min:.0f} min"]
+        parts.extend(_activity_metric_parts(activity))
         lines.append(
-            "- "
-            f"{activity.raw_type or 'Unknown'}: "
-            f"{_display_activity_name(activity)} "
-            f"({_format_distance(activity.distance_km)}, "
-            f"{activity.duration_min:.0f} min)"
+            f"- {activity.raw_type or 'Unknown'}: "
+            f"{_display_activity_name(activity)} ({', '.join(parts)})"
         )
     return lines
 
@@ -1902,11 +2027,10 @@ def _render_distance_activities(activities: list[NormalizedActivity]) -> list[st
 def _render_duration_activities(activities: list[NormalizedActivity]) -> list[str]:
     lines: list[str] = []
     for activity in activities:
+        parts = [f"{activity.duration_min:.0f} min", *_activity_metric_parts(activity)]
         lines.append(
-            "- "
-            f"{activity.raw_type or 'Unknown'}: "
-            f"{_display_activity_name(activity)} "
-            f"({activity.duration_min:.0f} min)"
+            f"- {activity.raw_type or 'Unknown'}: "
+            f"{_display_activity_name(activity)} ({', '.join(parts)})"
         )
     return lines
 
@@ -1921,7 +2045,8 @@ def _render_workout_activities(activities: list[NormalizedActivity], hevy_sets: 
         ]
         total_sets = len(workout_sets)
         total_volume_kg = sum(_float_value(set_row.get("volume_kg", "")) for set_row in workout_sets)
-        lines.append(f"- {_display_activity_name(activity)}: {activity.duration_min:.0f} min")
+        parts = [f"{activity.duration_min:.0f} min", *_activity_metric_parts(activity)]
+        lines.append(f"- {_display_activity_name(activity)}: {' / '.join(parts)}")
         if workout_sets:
             lines.append(f"  - Sets: {total_sets}")
             lines.append(f"  - Volume: {_format_volume(total_volume_kg)}")
@@ -1961,16 +2086,113 @@ def _format_volume(value: float) -> str:
     return f"{value:.0f} kg" if value else "0 kg"
 
 
-def _normalize_withings_activities(activities: list[dict[str, str]]) -> list[NormalizedActivity]:
-    return [normalize_withings_activity(activity) for activity in activities]
+def _normalize_withings_activities(
+    activities: list[dict[str, str]],
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[NormalizedActivity]:
+    return [normalize_withings_activity(activity, local_timezone) for activity in activities]
 
 
-def _normalize_hevy_activities(activities: list[dict[str, str]]) -> list[NormalizedActivity]:
-    return [normalize_hevy_activity(activity) for activity in activities]
+def _normalize_activities(
+    activities: list[dict[str, str]],
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[NormalizedActivity]:
+    normalizers = {
+        "hevy": normalize_hevy_activity,
+        "suunto": normalize_suunto_activity,
+        "withings": normalize_withings_activity,
+    }
+    return [
+        normalizers.get(
+            (activity.get("source") or "withings").strip().lower(),
+            normalize_withings_activity,
+        )(activity, local_timezone)
+        for activity in activities
+    ]
 
 
-def _normalize_suunto_activities(activities: list[dict[str, str]]) -> list[NormalizedActivity]:
-    return [normalize_suunto_activity(activity) for activity in activities]
+def _normalize_hevy_activities(
+    activities: list[dict[str, str]],
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[NormalizedActivity]:
+    return [normalize_hevy_activity(activity, local_timezone) for activity in activities]
+
+
+def _normalize_suunto_activities(
+    activities: list[dict[str, str]],
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[NormalizedActivity]:
+    return [normalize_suunto_activity(activity, local_timezone) for activity in activities]
+
+
+def _prefer_suunto_activities(
+    activities: list[NormalizedActivity],
+) -> list[NormalizedActivity]:
+    suunto_activities = [activity for activity in activities if activity.source == "suunto"]
+    retained_withings: list[NormalizedActivity] = []
+    retained: list[NormalizedActivity] = []
+    for activity in activities:
+        if activity.source != "withings":
+            retained.append(activity)
+            continue
+        if any(_activities_overlap(activity, suunto) for suunto in suunto_activities):
+            continue
+        if any(_activities_overlap(activity, existing) for existing in retained_withings):
+            continue
+        retained_withings.append(activity)
+        retained.append(activity)
+    return retained
+
+
+def _activities_overlap(
+    secondary: NormalizedActivity,
+    authoritative: NormalizedActivity,
+) -> bool:
+    if secondary.activity_type != authoritative.activity_type:
+        return False
+    if _activity_date(secondary.start_time) != _activity_date(authoritative.start_time):
+        return False
+    if secondary.distance_km is None or authoritative.distance_km is None:
+        return False
+
+    distance_tolerance = max(
+        0.15,
+        min(secondary.distance_km, authoritative.distance_km) * 0.05,
+    )
+    if abs(secondary.distance_km - authoritative.distance_km) > distance_tolerance:
+        return False
+
+    secondary_start = _activity_timestamp(secondary.start_time)
+    authoritative_start = _activity_timestamp(authoritative.start_time)
+    if secondary_start is None or authoritative_start is None:
+        return False
+    secondary_end = _activity_end_timestamp(secondary, secondary_start)
+    authoritative_end = _activity_end_timestamp(authoritative, authoritative_start)
+    windows_overlap = (
+        secondary_end is not None
+        and authoritative_end is not None
+        and secondary_start <= authoritative_end
+        and authoritative_start <= secondary_end
+    )
+    starts_close = abs(secondary_start - authoritative_start) <= 30 * 60
+    return windows_overlap or starts_close
+
+
+def _activity_timestamp(value: str) -> float | None:
+    parsed = _parse_timestamp(value)
+    return parsed.timestamp() if parsed is not None else None
+
+
+def _activity_end_timestamp(
+    activity: NormalizedActivity,
+    start_timestamp: float,
+) -> float | None:
+    end_timestamp = _activity_timestamp(activity.end_time)
+    if end_timestamp is not None and end_timestamp >= start_timestamp:
+        return end_timestamp
+    if activity.duration_min > 0:
+        return start_timestamp + activity.duration_min * 60
+    return None
 
 
 def _activity_sources(activities: list[NormalizedActivity]) -> str:

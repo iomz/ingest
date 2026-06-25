@@ -53,6 +53,11 @@ weight_change_kg = weight_30_days_ago - current_weight
 estimated_deficit_kcal_per_day = (weight_change_kg * 7700) / 30
 ```
 
+Physical Context also computes ingest-defined CTL, ATL, and TSB from daily
+Suunto TSS history. See [docs/metrics.md](docs/metrics.md#training-load) for
+formula, end-of-report-date semantics, history maturity, source references, and
+limitations. Values include report date TSS and support planning following day.
+
 ## Commands
 
 Primary daily workflow:
@@ -126,6 +131,9 @@ Create local config:
 mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}"
 cp config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/ingest.toml"
 ```
+
+`app.timezone` defines local report dates and interpretation of source
+timestamps without an explicit UTC offset. It defaults to `Asia/Tokyo`.
 
 Default application data directory:
 

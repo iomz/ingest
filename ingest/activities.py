@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+DEFAULT_TIMEZONE = ZoneInfo("Asia/Tokyo")
 
 
 @dataclass(frozen=True)
@@ -17,24 +20,48 @@ class NormalizedActivity:
     name: str = ""
     notes: str = ""
     step_count: int = 0
+    energy_kcal: float | None = None
+    avg_hr: float | None = None
+    max_hr: float | None = None
+    tss_score: float | None = None
+    tss_method: str = ""
+    intensity_factor: float | None = None
+    recovery_time_seconds: float | None = None
 
 
-def normalize_withings_activity(activity: dict[str, str]) -> NormalizedActivity:
-    return normalize_activity(activity, source="withings")
+def normalize_withings_activity(
+    activity: dict[str, str],
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> NormalizedActivity:
+    return normalize_activity(activity, source="withings", local_timezone=local_timezone)
 
 
-def normalize_hevy_activity(activity: dict[str, str]) -> NormalizedActivity:
-    return normalize_activity(activity, source="hevy")
+def normalize_hevy_activity(
+    activity: dict[str, str],
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> NormalizedActivity:
+    return normalize_activity(activity, source="hevy", local_timezone=local_timezone)
 
 
-def normalize_suunto_activity(activity: dict[str, str]) -> NormalizedActivity:
-    return normalize_activity(activity, source="suunto")
+def normalize_suunto_activity(
+    activity: dict[str, str],
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> NormalizedActivity:
+    return normalize_activity(activity, source="suunto", local_timezone=local_timezone)
 
 
-def normalize_activity(activity: dict[str, str], *, source: str) -> NormalizedActivity:
-    start_time = activity.get("start_time", "")
+def normalize_activity(
+    activity: dict[str, str],
+    *,
+    source: str,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> NormalizedActivity:
+    start_time = _local_time(activity.get("start_time", ""), local_timezone)
     duration_min = _float_value(activity.get("duration_min", ""))
-    end_time = activity.get("end_time", "") or _end_time(start_time, duration_min)
+    end_time = _local_time(activity.get("end_time", ""), local_timezone) or _end_time(
+        start_time,
+        duration_min,
+    )
     distance_km = _optional_float(activity.get("distance_km", ""))
     raw_type = activity.get("raw_type") or activity.get("activity_type") or "Unknown"
     return NormalizedActivity(
@@ -49,6 +76,13 @@ def normalize_activity(activity: dict[str, str], *, source: str) -> NormalizedAc
         name=activity.get("name", ""),
         notes=activity.get("notes", "") or activity.get("description", ""),
         step_count=_int_value(activity.get("step_count", "") or activity.get("steps", "")),
+        energy_kcal=_optional_float(activity.get("energy_kcal", "")),
+        avg_hr=_optional_float(activity.get("avg_hr", "")),
+        max_hr=_optional_float(activity.get("max_hr", "")),
+        tss_score=_optional_float(activity.get("tss_score", "")),
+        tss_method=activity.get("tss_method", "") or "",
+        intensity_factor=_optional_float(activity.get("intensity_factor", "")),
+        recovery_time_seconds=_optional_float(activity.get("recovery_time_seconds", "")),
     )
 
 
@@ -91,8 +125,7 @@ def _parse_time(value: str) -> datetime | None:
     if not value:
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return parsed.replace(tzinfo=None)
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
 
@@ -102,6 +135,17 @@ def _end_time(start_time: str, duration_min: float) -> str:
     if start is None:
         return ""
     return (start + timedelta(minutes=duration_min)).isoformat()
+
+
+def _local_time(value: str, local_timezone: ZoneInfo) -> str:
+    parsed = _parse_time(value)
+    if parsed is None:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=local_timezone)
+    else:
+        parsed = parsed.astimezone(local_timezone)
+    return parsed.isoformat()
 
 
 def _optional_float(value: str) -> float | None:

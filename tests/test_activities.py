@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from zoneinfo import ZoneInfo
 
-from ingest.activities import canonical_activity_type, normalize_withings_activity
+from ingest.activities import (
+    canonical_activity_type,
+    normalize_suunto_activity,
+    normalize_withings_activity,
+)
 
 
 class ActivitiesTest(unittest.TestCase):
@@ -31,6 +36,28 @@ class ActivitiesTest(unittest.TestCase):
         self.assertEqual(canonical_activity_type("running"), "run")
         self.assertEqual(canonical_activity_type("treadmill"), "run")
         self.assertEqual(canonical_activity_type("cycling"), "ride")
+
+    def test_normalizes_naive_withings_and_utc_suunto_to_configured_timezone(self) -> None:
+        timezone = ZoneInfo("Asia/Tokyo")
+        withings = normalize_withings_activity(
+            {
+                "start_time": "2026-06-24T14:14:21",
+                "duration_min": "140.13",
+                "activity_type": "walk",
+            },
+            timezone,
+        )
+        suunto = normalize_suunto_activity(
+            {
+                "start_time": "2026-06-24T05:14:21+00:00",
+                "duration_min": "68.69",
+                "activity_type": "walk",
+            },
+            timezone,
+        )
+
+        self.assertEqual(withings.start_time, "2026-06-24T14:14:21+09:00")
+        self.assertEqual(suunto.start_time, "2026-06-24T14:14:21+09:00")
 
 
 if __name__ == "__main__":

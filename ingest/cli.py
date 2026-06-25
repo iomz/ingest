@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from collections.abc import Awaitable, Callable
 
@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.source == "today":
-        target = date.today()
+        target = _local_today(config)
         _sync_for_daily_context(config, args.sync)
         if args.markdown:
             return _print_daily_context(config, target)
@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.source == "yesterday":
         _sync_for_daily_context(config, args.sync)
-        target = date.today() - timedelta(days=1)
+        target = _local_today(config) - timedelta(days=1)
         if args.markdown:
             return _print_daily_context(config, target)
         return _print_daily_terminal_context(config, target)
@@ -164,6 +164,10 @@ def _date_arg(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("date must be in YYYY-MM-DD format") from exc
+
+
+def _local_today(config: AppConfig) -> date:
+    return datetime.now(config.timezone).date()
 
 
 def _add_daily_options(parser: argparse.ArgumentParser) -> None:
