@@ -310,20 +310,30 @@ command = "{command_path}"
                 Console(file=terminal_output, width=160, color_system=None, force_terminal=False),
             )
 
-            self.assertIn("| Load | TSS 42.7 · Recovery 8h |", content)
+            self.assertIn("| Load | TSS 42.7 · Suunto recovery 8h |", content)
             self.assertIn("| HR | avg 120 · max 170 |", content)
             self.assertIn("| Energy | 600 kcal |", content)
             self.assertIn(
                 "Suunto metrics: TSS 42.7, average HR 120, maximum HR 170, "
-                "activity energy 600 kcal, recovery time 8h.",
+                "activity energy 600 kcal, Suunto recovery time 8h.",
                 content,
             )
-            self.assertNotIn("Activity score", content)
+            for wording in [
+                "Activity score",
+                "fatigue risk",
+                "Compatibility:",
+                "Recovery load score",
+                "Recovery Flags",
+            ]:
+                self.assertNotIn(wording, content)
             self.assertIn(
-                "WALKING: Walking (2.50 km, 30 min, 3,000 steps, 200 kcal, HR 100–130, TSS(hr) 12.5, Recovery 2h)",
+                "WALKING: Walking (2.50 km, 30 min, 3,000 steps, 200 kcal, HR 100–130, TSS(hr) 12.5, Suunto recovery 2h)",
                 content,
             )
-            self.assertIn("Load      TSS 42.7 / Recovery 8h", terminal_output.getvalue())
+            self.assertIn(
+                "Load      TSS 42.7 / Suunto recovery 8h",
+                terminal_output.getvalue(),
+            )
             self.assertIn("HR        avg 120 / max 170", terminal_output.getvalue())
             self.assertIn("Energy    600 kcal", terminal_output.getvalue())
 
@@ -347,6 +357,16 @@ command = "{command_path}"
             )
             (withings_dir / "activity.csv").write_text(
                 "date,step_count,distance_km\n2026-06-24,8949,6.10\n",
+                encoding="utf-8",
+            )
+            (withings_dir / "body_measures.csv").write_text(
+                "\n".join(
+                    [
+                        "grpid,date,datetime_local,type,type_name,value,unit",
+                        "body-1,2026-06-24,2026-06-24T06:00:00+09:00,1,weight,98.60,kg",
+                    ]
+                )
+                + "\n",
                 encoding="utf-8",
             )
             suunto_dir = data_dir / "suunto"
@@ -374,14 +394,15 @@ command = "{command_path}"
                 "| Walking distance | 5.20 km | 0.74 km/day | 0.17 km/day | Above 30-day average |",
                 content,
             )
-            self.assertIn("- Activity count: 1", content)
-            self.assertIn("- Sources: Suunto", content)
-            self.assertIn("Additional movement: 5.20 km walking", content)
+            self.assertIn("- Workout source: Suunto", content)
+            self.assertIn("- Step source: Withings", content)
+            self.assertIn("- Body source: Withings", content)
+            self.assertIn("- Activity count: 1 primary", content)
             self.assertIn(
                 "Recorded 1 primary activity, 5.20 km walking, 69 min moving time, and 8,949 Withings steps.",
                 content,
             )
-            self.assertIn("| Load | TSS 46.0 · Recovery 2.1h |", content)
+            self.assertIn("| Load | TSS 46.0 · Suunto recovery 2.1h |", content)
             self.assertIn("| HR | avg 108 · max 140 |", content)
             self.assertIn("| Energy | 407 kcal |", content)
             self.assertNotIn("10.40 km", content)

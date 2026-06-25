@@ -33,7 +33,21 @@ Compare current 7-day average weight with the previous 7-day average.
 
 ## Data Coverage
 
-Data coverage describes the Withings activity records used for the generated context.
+Data coverage describes source roles used for generated context.
 
-- Sources: source names present.
-- Activities: count of activities for the target date.
+- Workout source: source names for primary workout records.
+- Step source: Withings when daily steps are available.
+- Body source: Withings when body measures are available.
+- Activity count: primary workout count after source precedence and deduplication.
+
+## Suunto Load Metrics
+
+Physical Context reports only source-provided activity/load values:
+
+- TSS
+- Suunto recovery time
+- average and maximum heart rate
+- activity energy
+
+ingest does not derive recovery compatibility, fatigue risk, or a recovery load
+score.

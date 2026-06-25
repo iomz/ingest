@@ -218,7 +218,8 @@ class CliTest(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             withings_sync.assert_not_called()
-            self.assertIn("Sources         Hevy", stdout.getvalue())
+            self.assertIn("Workout source  Hevy", stdout.getvalue())
+            self.assertIn("Body source     Withings", stdout.getvalue())
             self.assertIn("Workout", stdout.getvalue())
             self.assertIn("    Push Day / 76 min", stdout.getvalue())
             self.assertNotIn("unknown distance", stdout.getvalue())

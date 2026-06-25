@@ -40,6 +40,17 @@ def body_measure(measured_date: date, type_name: str, value: float, unit: str = 
 
 
 class ContextTest(unittest.TestCase):
+    def assert_no_custom_recovery(self, content: str) -> None:
+        for wording in [
+            "fatigue risk",
+            "Compatibility:",
+            "Recovery load score",
+            "Recovery Flags",
+            "Recovery compatibility",
+            "load score",
+        ]:
+            self.assertNotIn(wording, content)
+
     def test_terminal_handoff_wraps_before_rich_printing(self) -> None:
         activity = normalize_withings_activity(
             {
@@ -107,7 +118,7 @@ class ContextTest(unittest.TestCase):
         self.assertIn("## Daily Snapshot", content)
         self.assertNotIn("| Activity |", content)
         self.assertNotIn("Activity score", content)
-        self.assertIn("| Recovery | Caution · fatigue risk moderate · load 15.4 |", content)
+        self.assert_no_custom_recovery(content)
         self.assertIn("| Movement | unavailable steps", content)
         self.assertNotIn("- Walking: 0.00 km / 0 min", content)
         self.assertIn("| Weight | 70.50 kg | 70.50 kg | 70.50 kg | Stable |", content)
@@ -182,11 +193,10 @@ class ContextTest(unittest.TestCase):
         )
 
         self.assertNotIn("Activity score", content)
-        self.assertIn("| Recovery | Good · fatigue risk low · load 4.0 |", content)
+        self.assert_no_custom_recovery(content)
         self.assertIn("| Movement | unavailable steps · 4.00 km walk |", content)
         self.assertIn("| Walking distance | 4.00 km | 0.57 km/day | 0.13 km/day | Above 30-day average |", content)
         self.assertIn("| Body | No Withings weight available · unknown |", content)
-        self.assertIn("- Recovery load score: 4.0", content)
 
     def test_renders_moderate_derived_metrics(self) -> None:
         content = render_daily_context(
@@ -203,9 +213,9 @@ class ContextTest(unittest.TestCase):
         )
 
         self.assertNotIn("Activity score", content)
-        self.assertIn("| Recovery | Acceptable · fatigue risk low · load 10.0 |", content)
+        self.assert_no_custom_recovery(content)
 
-    def test_recovery_scores_high_walking_as_caution(self) -> None:
+    def test_long_walk_does_not_generate_recovery_judgment(self) -> None:
         content = render_daily_context(
             date(2026, 5, 29),
             [
@@ -219,9 +229,7 @@ class ContextTest(unittest.TestCase):
             ],
         )
 
-        self.assertIn("- Compatibility: Caution", content)
-        self.assertIn("- Fatigue risk: Moderate", content)
-        self.assertIn("- Recovery load score: 15.0", content)
+        self.assert_no_custom_recovery(content)
         self.assertIn("15.00 km walking", content)
 
     def test_renders_none_derived_metrics_without_activities(self) -> None:
@@ -229,7 +237,7 @@ class ContextTest(unittest.TestCase):
 
         self.assertNotIn("| Activity |", content)
         self.assertNotIn("Activity score", content)
-        self.assertIn("| Recovery | Good · fatigue risk low · load 0.0 |", content)
+        self.assert_no_custom_recovery(content)
         self.assertIn("| Movement | unavailable steps |", content)
         self.assertNotIn("- Walking: 0.00 km / 0 min", content)
         self.assertNotIn("- Walking trend: Unknown", content)
@@ -380,8 +388,8 @@ class ContextTest(unittest.TestCase):
             ],
         )
 
-        self.assertIn("- Sources: Withings", content)
-        self.assertIn("- Activity count: 2", content)
+        self.assertIn("- Workout source: Withings", content)
+        self.assertIn("- Activity count: 2 primary", content)
         self.assertIn("Outdoor Walk", content)
         self.assertIn("Duplicate Walk", content)
 
@@ -439,7 +447,7 @@ class ContextTest(unittest.TestCase):
         self.assertIn("- Push Day: 93 min", content)
         self.assertNotIn("unknown distance", content)
 
-    def test_recovery_scores_heavy_strength_as_poor(self) -> None:
+    def test_heavy_strength_does_not_generate_recovery_judgment(self) -> None:
         content = render_daily_context(
             date(2026, 6, 5),
             [
@@ -463,11 +471,10 @@ class ContextTest(unittest.TestCase):
             ],
         )
 
-        self.assertIn("- Compatibility: Poor", content)
-        self.assertIn("- Fatigue risk: High", content)
-        self.assertIn("Full-body strength: 94 min, 69 sets, 69 exercises, 34551 kg", content)
+        self.assert_no_custom_recovery(content)
+        self.assertIn("| Strength | Full Body · 94 min · 69 sets · 34551 kg |", content)
 
-    def test_recovery_scores_mixed_walking_and_strength_as_poor(self) -> None:
+    def test_mixed_walking_and_strength_does_not_generate_recovery_judgment(self) -> None:
         content = render_daily_context(
             date(2026, 6, 5),
             [
@@ -500,12 +507,11 @@ class ContextTest(unittest.TestCase):
             ],
         )
 
-        self.assertIn("- Compatibility: Poor", content)
-        self.assertIn("- Fatigue risk: High", content)
-        self.assertIn("- Recovery load score: 39.0", content)
-        self.assertIn("Mixed load day: walking + strength", content)
+        self.assert_no_custom_recovery(content)
+        self.assertIn("| Movement | unavailable steps · 5.89 km walk |", content)
+        self.assertIn("| Strength | Full Body · 94 min · 69 sets · 34551 kg |", content)
 
-    def test_recovery_scores_cycling_and_strength_as_mixed_load(self) -> None:
+    def test_cycling_and_strength_do_not_generate_recovery_judgment(self) -> None:
         content = render_daily_context(
             date(2026, 6, 5),
             [
@@ -533,13 +539,12 @@ class ContextTest(unittest.TestCase):
             ],
         )
 
-        self.assertIn("- Compatibility: Caution", content)
-        self.assertIn("- Recovery load score: 19.8", content)
-        self.assertIn("Additional movement: 20.00 km cycling", content)
-        self.assertIn("Mixed load day: strength + cycling", content)
+        self.assert_no_custom_recovery(content)
+        self.assertIn("| Movement | unavailable steps · 20.00 km ride |", content)
+        self.assertIn("| Strength | Push Day · 45 min · 20 sets · 10000 kg |", content)
         self.assertNotIn("walking + strength", content)
 
-    def test_recovery_scores_swimming_and_walking_as_caution(self) -> None:
+    def test_swimming_and_walking_do_not_generate_recovery_judgment(self) -> None:
         content = render_daily_context(
             date(2026, 5, 29),
             [
@@ -563,12 +568,13 @@ class ContextTest(unittest.TestCase):
             ],
         )
 
-        self.assertIn("- Compatibility: Caution", content)
-        self.assertIn("- Fatigue risk: Moderate", content)
-        self.assertIn("- Recovery load score: 15.2", content)
-        self.assertIn("Mixed load day: walking + swimming", content)
+        self.assert_no_custom_recovery(content)
+        self.assertIn(
+            "| Movement | unavailable steps · 6.00 km walk · 60 min swim |",
+            content,
+        )
 
-    def test_subjective_all_out_note_downgrades_recovery(self) -> None:
+    def test_subjective_all_out_note_does_not_generate_recovery_judgment(self) -> None:
         content = render_daily_context(
             date(2026, 6, 5),
             [
@@ -588,11 +594,10 @@ class ContextTest(unittest.TestCase):
             ],
         )
 
-        self.assertIn("- Compatibility: Poor", content)
-        self.assertIn("- Fatigue risk: High", content)
-        self.assertIn("Subjective all-out effort noted", content)
+        self.assert_no_custom_recovery(content)
+        self.assertIn("| Strength | Push Day · 60 min · 40 sets · 28000 kg |", content)
 
-    def test_recovery_handles_missing_workout_set_data(self) -> None:
+    def test_missing_workout_set_data_does_not_generate_recovery_judgment(self) -> None:
         content = render_daily_context(
             date(2026, 6, 5),
             [
@@ -607,8 +612,8 @@ class ContextTest(unittest.TestCase):
             ],
         )
 
-        self.assertIn("- Compatibility: Good", content)
-        self.assertIn("Strength details unavailable; score uses duration only", content)
+        self.assert_no_custom_recovery(content)
+        self.assertNotIn("score uses duration", content)
 
     def test_translates_known_japanese_activity_names_for_display(self) -> None:
         content = render_daily_context(
@@ -690,8 +695,10 @@ class ContextTest(unittest.TestCase):
             content = written.read_text(encoding="utf-8")
             self.assertIn("withings:w1", content)
             self.assertIn("withings:w2", content)
-            self.assertIn("- Sources: Withings", content)
-            self.assertIn("- Activity count: 2", content)
+            self.assertIn("- Workout source: Withings", content)
+            self.assertIn("- Step source: Withings", content)
+            self.assertIn("- Body source: Withings", content)
+            self.assertIn("- Activity count: 2 primary", content)
             self.assertIn("| Movement | 3,456 steps · 2.10 km walk |", content)
             self.assertIn("| Walking distance | 2.10 km | 1.30 km/day | 0.30 km/day | Above 30-day average |", content)
             self.assertNotIn("withings:w0", content)
@@ -833,7 +840,7 @@ class ContextTest(unittest.TestCase):
 
             content = written.read_text(encoding="utf-8")
             self.assertNotIn("category_16", content)
-            self.assertIn("- Sources: None", content)
+            self.assertIn("- Workout source: None", content)
 
 
 if __name__ == "__main__":
