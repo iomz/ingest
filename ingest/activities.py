@@ -27,6 +27,9 @@ class NormalizedActivity:
     tss_method: str = ""
     intensity_factor: float | None = None
     recovery_time_seconds: float | None = None
+    detail_source: str = ""
+    detail_source_id: str = ""
+    detail_name: str = ""
 
 
 def normalize_withings_activity(
