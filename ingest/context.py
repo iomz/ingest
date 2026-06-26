@@ -83,9 +83,6 @@ class EstimatedDeficitMetrics:
     avg_30d: float | None
 
 
-DERIVED_BODY_METRIC_LABELS = {"BMI", "BMR"}
-
-
 def generate_daily_context(config: AppConfig, target_date: date | None = None) -> Path:
     target = target_date or datetime.now(config.timezone).date()
     state = build_daily_state(config, target)
@@ -1467,14 +1464,7 @@ def _body_rows(
     historical_measures: list[dict[str, str]],
     target_date: date,
 ) -> list[str]:
-    rows = []
-    in_derived_metrics = False
-    for label, value in _body_kv_rows(measures, historical_measures, target_date):
-        if label in DERIVED_BODY_METRIC_LABELS and not in_derived_metrics:
-            rows.append("| ----- |  |")
-            in_derived_metrics = True
-        rows.append(f"| {label} | {value} |")
-    return rows
+    return [f"| {label} | {value} |" for label, value in _body_kv_rows(measures, historical_measures, target_date)]
 
 
 def _terminal_body_kv_rows(
@@ -1482,14 +1472,7 @@ def _terminal_body_kv_rows(
     historical_measures: list[dict[str, str]],
     target_date: date,
 ) -> list[tuple[str, str]]:
-    terminal_rows = []
-    in_derived_metrics = False
-    for label, value in _body_kv_rows(measures, historical_measures, target_date):
-        if label in DERIVED_BODY_METRIC_LABELS and not in_derived_metrics:
-            terminal_rows.append(("-----", ""))
-            in_derived_metrics = True
-        terminal_rows.append((label, value.replace(" · ", " / ")))
-    return terminal_rows
+    return [(label, value.replace(" · ", " / ")) for label, value in _body_kv_rows(measures, historical_measures, target_date)]
 
 
 def _body_kv_rows(
@@ -1513,22 +1496,39 @@ def _body_kv_rows(
         "type_4",
     }
     rows = [
-        ("Weight", _measure_value(latest_by_type.get("weight"))),
-        ("Body fat", _body_fat_value(latest_by_type)),
-        ("Muscle mass", _measure_value(latest_by_type.get("muscle_mass"))),
-        ("Hydration", _measure_value(latest_by_type.get("hydration"))),
-        ("Fat-free mass", _measure_value(latest_by_type.get("fat_free_mass"))),
-        ("Bone mass", _measure_value(latest_by_type.get("bone_mass"))),
+        (
+            "Weight",
+            " / ".join(
+                [
+                    _measure_value(latest_by_type.get("weight")),
+                    f"fat {_compact_body_fat_value(latest_by_type)}",
+                    f"muscle {_measure_value(latest_by_type.get('muscle_mass'))}",
+                ]
+            ),
+        ),
+        (
+            "Mass",
+            " / ".join(
+                [
+                    f"FFM {_measure_value(latest_by_type.get('fat_free_mass'))}",
+                    f"water {_measure_value(latest_by_type.get('hydration'))}",
+                    f"bone {_measure_value(latest_by_type.get('bone_mass'))}",
+                ]
+            ),
+        ),
     ]
     for type_name, measure in latest_by_type.items():
         if type_name not in main_types:
             rows.append((type_name or "measurement", _measure_value(measure)))
     bmi = _bmi_value(latest_by_type.get("weight"), _latest_historical_height(historical_measures, target_date))
     bmr = _bmr_value(latest_by_type.get("fat_free_mass"))
+    index_parts = []
     if bmi is not None:
-        rows.append(("BMI", bmi))
+        index_parts.append(f"BMI {bmi}")
     if bmr is not None:
-        rows.append(("BMR", bmr))
+        index_parts.append(f"BMR {bmr}")
+    if index_parts:
+        rows.append(("Index", " / ".join(index_parts)))
     return rows
 
 
@@ -1604,6 +1604,23 @@ def _body_fat_value(measures: dict[str, dict[str, str]]) -> str:
     if fat_mass_value <= 0:
         return fat_ratio
     return f"{fat_ratio} · {fat_mass_value:.2f} kg fat mass"
+
+
+def _compact_body_fat_value(measures: dict[str, dict[str, str]]) -> str:
+    fat_ratio = _measure_value(measures.get("fat_ratio")).replace(" %", "%")
+    fat_mass = _measure_value(measures.get("fat_mass_weight"))
+    if fat_mass != "Unknown":
+        return f"{fat_ratio} ({fat_mass})"
+
+    weight = measures.get("weight")
+    ratio = measures.get("fat_ratio")
+    if weight is None or ratio is None:
+        return fat_ratio
+
+    fat_mass_value = _float_value(weight.get("value", "")) * _float_value(ratio.get("value", "")) / 100
+    if fat_mass_value <= 0:
+        return fat_ratio
+    return f"{fat_ratio} ({fat_mass_value:.2f} kg)"
 
 
 def _missing_data_summary(
