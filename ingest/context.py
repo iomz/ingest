@@ -1262,8 +1262,9 @@ def _terminal_distance_activity(
     text = Text(activity.raw_type or "Unknown", style=theme.style("subsection"))
     text.append("  ")
     text.append(_terminal_activity_source(activity), style=theme.style("muted"))
-    text.append(" / ")
-    text.append(_format_distance(activity.distance_km), style=theme.style("primary_value"))
+    if activity.distance_km is not None:
+        text.append(" / ")
+        text.append(_format_distance(activity.distance_km), style=theme.style("primary_value"))
     text.append(" / ")
     text.append(
         f"{activity.duration_min:.0f} min",
@@ -2457,6 +2458,15 @@ def _format_distance(value: float | None) -> str:
     return f"{value:.2f} km"
 
 
+def _distance_activity_parts(activity: NormalizedActivity) -> list[str]:
+    parts: list[str] = []
+    if activity.distance_km is not None:
+        parts.append(_format_distance(activity.distance_km))
+    parts.append(f"{activity.duration_min:.0f} min")
+    parts.extend(_activity_metric_parts(activity))
+    return parts
+
+
 def _display_activity_name(activity: NormalizedActivity) -> str:
     name = activity.detail_name or activity.name or f"{activity.source}:{activity.source_id}"
     translations = {
@@ -2509,8 +2519,7 @@ def _render_activity_sections(activities: list[NormalizedActivity], hevy_sets: l
 def _render_distance_activities(activities: list[NormalizedActivity]) -> list[str]:
     lines: list[str] = []
     for activity in activities:
-        parts = [_format_distance(activity.distance_km), f"{activity.duration_min:.0f} min"]
-        parts.extend(_activity_metric_parts(activity))
+        parts = _distance_activity_parts(activity)
         lines.append(
             f"- {activity.raw_type or 'Unknown'}: "
             f"{_display_activity_name(activity)} ({', '.join(parts)})"
@@ -2734,8 +2743,16 @@ def _strength_activities_match(
         and hevy_start <= suunto_end
         and suunto_start <= hevy_end
     )
+    windows_near = (
+        hevy_end is not None
+        and suunto_end is not None
+        and (
+            abs(hevy_start - suunto_end) <= 20 * 60
+            or abs(suunto_start - hevy_end) <= 20 * 60
+        )
+    )
     starts_close = abs(hevy_start - suunto_start) <= 30 * 60
-    return windows_overlap or starts_close
+    return windows_overlap or windows_near or starts_close
 
 
 def _prefer_suunto_activities(
