@@ -5,7 +5,7 @@ import math
 import re
 import shutil
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -33,6 +33,8 @@ class DailyState:
     historical_activities: list[NormalizedActivity]
     historical_measures: list[dict[str, str]]
     hevy_sets: list[dict[str, str]]
+    sleep_records: list[dict[str, str]] = field(default_factory=list)
+    historical_sleep_records: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,7 @@ def render_daily_terminal_context(
     target_date = state.target_date
     activities = state.activities
     withings_steps = _withings_step_count(state.withings_activity_summaries)
+    sleep = _primary_sleep(state.sleep_records)
     logged_duration_min = sum(activity.duration_min for activity in activities)
     withings_steps_text = _format_terminal_step_count(withings_steps)
     walking_distance_km = sum(
@@ -186,6 +189,7 @@ def render_daily_terminal_context(
                     separator=" / ",
                 ),
             ),
+            *([("Sleep", _sleep_snapshot_status(sleep, separator=" / "))] if sleep else []),
             ("Body", _snapshot_body_status(weight_metrics, separator=" / ")),
         ],
         indent=2,
@@ -376,6 +380,8 @@ def render_daily_terminal_context(
             withings_steps,
             state.measures,
             training_load_metrics,
+            sleep,
+            _sleep_expected(state.historical_sleep_records, target_date),
         ),
         indent=2,
         theme=theme,
@@ -407,6 +413,7 @@ def render_daily_terminal_context(
             estimated_deficit=_format_average_estimated_deficit(estimated_deficit_metrics.today)
             if estimated_deficit_metrics is not None
             else None,
+            sleep=sleep,
         ),
         theme=theme,
     )
@@ -428,6 +435,8 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
         all_withings_activity_summaries,
         target_date,
     )
+    all_sleep_records = read_withings_sleep(config.withings.sleep_csv)
+    sleep_records = sleep_records_for_date(all_sleep_records, target_date)
     normalized_activities = _prefer_suunto_activities(
         [
             *_normalize_withings_activities(withings_activities, config.timezone),
@@ -448,6 +457,8 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
         historical_activities=normalized_activities,
         historical_measures=all_measures,
         hevy_sets=hevy_sets,
+        sleep_records=sleep_records,
+        historical_sleep_records=all_sleep_records,
     )
 
 
@@ -460,6 +471,14 @@ def read_withings_measures(path: Path) -> list[dict[str, str]]:
 
 
 def read_withings_activity_summaries(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
+def read_withings_sleep(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
 
@@ -541,6 +560,14 @@ def withings_activity_summaries_for_date(
     return [activity for activity in activity_summaries if activity.get("date") == target]
 
 
+def sleep_records_for_date(
+    sleep_records: list[dict[str, str]],
+    target_date: date,
+) -> list[dict[str, str]]:
+    target = target_date.isoformat()
+    return [sleep for sleep in sleep_records if sleep.get("wake_date") == target]
+
+
 def render_daily_context(
     target_date: date,
     activities: list[dict[str, str]],
@@ -551,6 +578,8 @@ def render_daily_context(
     withings_activity_summaries: list[dict[str, str]] | None = None,
     historical_withings_activity_summaries: list[dict[str, str]] | None = None,
     local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+    sleep_records: list[dict[str, str]] | None = None,
+    historical_sleep_records: list[dict[str, str]] | None = None,
 ) -> str:
     measures = measures or []
     historical_measures = historical_measures if historical_measures is not None else measures
@@ -560,6 +589,12 @@ def render_daily_context(
         historical_withings_activity_summaries
         if historical_withings_activity_summaries is not None
         else withings_activity_summaries
+    )
+    sleep_records = sleep_records or []
+    historical_sleep_records = (
+        historical_sleep_records
+        if historical_sleep_records is not None
+        else sleep_records
     )
     state = DailyState(
         target_date=target_date,
@@ -574,6 +609,8 @@ def render_daily_context(
         ),
         historical_measures=historical_measures,
         hevy_sets=hevy_sets or [],
+        sleep_records=sleep_records,
+        historical_sleep_records=historical_sleep_records,
     )
     return _render_daily_state(state)
 
@@ -594,6 +631,7 @@ def _render_daily_state(state: DailyState) -> str:
     historical_normalized_activities = state.historical_activities
     measures = state.measures
     withings_steps = _withings_step_count(state.withings_activity_summaries)
+    sleep = _primary_sleep(state.sleep_records)
     logged_duration_min = sum(activity.duration_min for activity in primary_today_activities)
     withings_steps_text = _format_step_count(withings_steps)
     walking_distance_km = sum(
@@ -665,6 +703,7 @@ def _render_daily_state(state: DailyState) -> str:
             )
         ],
         f"| Strength | {_snapshot_strength_status(strength_activities, state.hevy_sets)} |",
+        *([f"| Sleep | {_sleep_snapshot_status(sleep)} |"] if sleep else []),
         f"| Body | {_snapshot_body_status(weight_metrics)} |",
         "",
         "## Trends",
@@ -736,6 +775,7 @@ def _render_daily_state(state: DailyState) -> str:
             f"- Workout source: {_activity_sources(primary_today_activities)}",
             f"- Step source: {'Withings' if withings_steps is not None else 'None'}",
             f"- Body source: {'Withings' if measures else 'None'}",
+            f"- Sleep source: {'Withings' if sleep else 'None'}",
             f"- Activity count: {len(primary_today_activities)} primary",
             *(
                 [
@@ -745,7 +785,7 @@ def _render_daily_state(state: DailyState) -> str:
                 if training_load_metrics is not None
                 else []
             ),
-            f"- Missing or partial data: {_missing_data_summary(withings_steps, measures, primary_today_activities)}",
+            f"- Missing or partial data: {_missing_data_summary(withings_steps, measures, primary_today_activities, sleep, _sleep_expected(state.historical_sleep_records, target_date))}",
             "",
             "## Machine Handoff",
             "",
@@ -772,6 +812,7 @@ def _render_daily_state(state: DailyState) -> str:
                 estimated_deficit=_format_average_estimated_deficit(estimated_deficit_metrics.today)
                 if estimated_deficit_metrics is not None
                 else None,
+                sleep=sleep,
             ),
             "",
         ]
@@ -996,6 +1037,7 @@ SECTION_THEME_ROLES = {
     "Daily Snapshot": "section_daily_snapshot",
     "Trends": "section_trends",
     "Body": "section_body",
+    "Sleep": "section_body",
     "Activities": "section_activities",
     "Data Coverage": "section_data_coverage",
     "Machine Handoff": "section_machine_handoff",
@@ -1568,6 +1610,8 @@ def _missing_data_summary(
     withings_steps: int | None,
     measures: list[dict[str, str]],
     activities: list[NormalizedActivity],
+    sleep: dict[str, str] | None = None,
+    sleep_expected: bool = False,
 ) -> str:
     missing: list[str] = []
     if withings_steps is None:
@@ -1576,6 +1620,8 @@ def _missing_data_summary(
         missing.append("body measures unavailable")
     if not activities:
         missing.append("no activities logged")
+    if sleep_expected and sleep is None:
+        missing.append("sleep unavailable")
     if not missing:
         return "None"
     return "; ".join(missing)
@@ -1586,11 +1632,14 @@ def _terminal_data_coverage_rows(
     withings_steps: int | None,
     measures: list[dict[str, str]],
     training_load: TrainingLoadMetrics | None,
+    sleep: dict[str, str] | None,
+    sleep_expected: bool,
 ) -> list[tuple[str, str]]:
     rows = [
         ("Workout source", _activity_sources(activities)),
         ("Step source", "Withings" if withings_steps is not None else "None"),
         ("Body source", "Withings" if measures else "None"),
+        ("Sleep source", "Withings" if sleep else "None"),
         ("Activity count", f"{len(activities)} primary"),
     ]
     if training_load is not None:
@@ -1600,8 +1649,72 @@ def _terminal_data_coverage_rows(
                 _training_load_history_status(training_load.history_label),
             )
         )
-    rows.append(("Missing data", _missing_data_summary(withings_steps, measures, activities)))
+    rows.append(
+        (
+            "Missing data",
+            _missing_data_summary(
+                withings_steps,
+                measures,
+                activities,
+                sleep,
+                sleep_expected,
+            ),
+        )
+    )
     return rows
+
+
+def _primary_sleep(sleep_records: list[dict[str, str]]) -> dict[str, str] | None:
+    if not sleep_records:
+        return None
+    return max(
+        sleep_records,
+        key=lambda sleep: (
+            _float_value(sleep.get("total_sleep_min", "")),
+            sleep.get("end_time", ""),
+        ),
+    )
+
+
+def _sleep_expected(
+    historical_sleep_records: list[dict[str, str]],
+    target_date: date,
+) -> bool:
+    wake_dates = [
+        parsed
+        for sleep in historical_sleep_records
+        if (parsed := _date_from_value(sleep.get("wake_date", ""))) is not None
+    ]
+    return bool(wake_dates and min(wake_dates) <= target_date)
+
+
+def _sleep_snapshot_status(
+    sleep: dict[str, str],
+    *,
+    separator: str = " · ",
+) -> str:
+    duration = _format_sleep_duration(_float_value(sleep.get("total_sleep_min", "")))
+    bedtime = _sleep_clock_time(sleep.get("start_time", ""))
+    wake_time = _sleep_clock_time(sleep.get("end_time", ""))
+    return f"{duration}{separator}{bedtime}–{wake_time}"
+
+
+def _format_sleep_duration(minutes: float) -> str:
+    rounded_minutes = max(0, round(minutes))
+    hours, remainder = divmod(rounded_minutes, 60)
+    return f"{hours}h{remainder:02d}m"
+
+
+def _sleep_clock_time(value: str) -> str:
+    parsed = _parse_timestamp(value)
+    return parsed.strftime("%H:%M") if parsed is not None else "Unknown"
+
+
+def _date_from_value(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _withings_step_count(activity_summaries: list[dict[str, str]]) -> int | None:
@@ -2281,6 +2394,7 @@ def _ai_handoff(
     bmi: str | None,
     bmr: str | None,
     estimated_deficit: str | None,
+    sleep: dict[str, str] | None,
 ) -> str:
     if not activities:
         activity_sentence = "No primary activities found for this date."
@@ -2320,13 +2434,20 @@ def _ai_handoff(
         body_sentences.append(f"BMR is {bmr}.")
     if estimated_deficit is not None:
         body_sentences.append(f"Estimated energy deficit is {estimated_deficit}.")
+    sleep_sentence = ""
+    if sleep is not None:
+        sleep_sentence = (
+            f" Sleep: {_format_sleep_duration(_float_value(sleep.get('total_sleep_min', '')))}, "
+            f"{_sleep_clock_time(sleep.get('start_time', ''))}–"
+            f"{_sleep_clock_time(sleep.get('end_time', ''))}, source Withings."
+        )
     return (
         f"{activity_sentence}{_suunto_handoff_sentence(suunto_metrics, training_load_metrics)}"
         f"{swimming_sentence}{strength_sentence} "
         f"{_activity_trend_handoff_sentence(activity_trends)}"
         f"{_performance_trend_handoff_sentence(performance_trends)}"
         f"{_training_load_trend_handoff_sentence(training_load_trend)}"
-        f"{' '.join(body_sentences)}"
+        f"{sleep_sentence} {' '.join(body_sentences)}"
     )
 
 

@@ -2,7 +2,8 @@
 
 ## Activity Sources
 
-Withings remains authoritative for daily step totals and body metrics.
+Withings remains authoritative for daily step totals, body metrics, and sleep
+summaries.
 
 Suunto is authoritative for workout distance, duration, activity type, heart
 rate, TSS, and activity energy. Matching Withings activity rows
@@ -38,7 +39,28 @@ Data coverage describes source roles used for generated context.
 - Workout source: source names for primary workout records.
 - Step source: Withings when daily steps are available.
 - Body source: Withings when body measures are available.
+- Sleep source: Withings when a sleep summary is available for the local wake
+  date.
 - Activity count: primary workout count after source precedence and deduplication.
+
+## Sleep
+
+Physical Context assigns sleep to the wake date using the configured ingest
+timezone. Withings sleep summaries provide the current baseline for sleep
+duration, bed and wake times. Sleep appears in the Daily Snapshot and Machine
+Handoff, but does not get a detailed report section. Sleep remains separate
+from TSS, CTL, ATL, and TSB.
+
+Sleep Cycle direct CSV export may be considered later for optional enrichment
+such as Sleep Cycle sleep quality, wake mood, and notes.
+
+Withings documents `asleepduration` for sleep nights from external sources.
+However, sleep visible in the Withings app, including sleep imported from Apple
+Health, may still be absent from the `getsummary` response. ingest falls back to
+the high-frequency sleep `get` endpoint and derives duration and stage totals
+from Withings-provided awake, light, deep, and REM segments. It does not derive
+a sleep score. When both endpoints return no sleep data, ingest preserves the
+existing normalized sleep cache and reports the API availability gap.
 
 ## Training Load
 

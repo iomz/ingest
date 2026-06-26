@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+import contextlib
+import io
 import json
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -14,20 +16,25 @@ from ingest.sources.withings import (
     fetch_activity_windowed,
     fetch_body_measures_windowed,
     fetch_latest_height,
+    fetch_sleep_summaries_windowed,
     fetch_workouts_windowed_if_available,
     fetch_workouts_windowed,
     has_cached_height,
     lagging_local_date,
     merge_activity_rows,
     merge_measure_rows,
+    merge_sleep_rows,
     merge_workout_rows,
     normalize_activity_summaries,
     normalize_measure_groups,
+    normalize_sleep_summaries,
     normalize_workouts,
     sync,
     sync_range,
+    summarize_sleep_states,
     write_activity,
     write_measures,
+    write_sleep,
     write_workouts,
 )
 
@@ -54,6 +61,10 @@ class FakeSession:
             return FakeResponse({"activities": []})
         if isinstance(data, dict) and data.get("action") == "getworkouts":
             return FakeResponse({"series": []})
+        if isinstance(data, dict) and data.get("action") == "getsummary":
+            return FakeResponse({"series": []})
+        if isinstance(data, dict) and data.get("action") == "get":
+            return FakeResponse({"model": 16, "series": []})
         return FakeResponse({"measuregrps": []})
 
 
@@ -65,6 +76,10 @@ class HeightSession(FakeSession):
             return FakeResponse({"activities": []})
         if isinstance(data, dict) and data.get("action") == "getworkouts":
             return FakeResponse({"series": []})
+        if isinstance(data, dict) and data.get("action") == "getsummary":
+            return FakeResponse({"series": []})
+        if isinstance(data, dict) and data.get("action") == "get":
+            return FakeResponse({"model": 16, "series": []})
         if isinstance(data, dict) and data.get("meastypes") == "4":
             return FakeResponse(
                 {
@@ -129,6 +144,7 @@ def write_withings_csvs(
     measures: list[str] | None = None,
     workouts: list[str] | None = None,
     activity: list[str] | None = None,
+    sleep: list[str] | None = None,
 ) -> None:
     withings_dir = data_dir / "withings"
     withings_dir.mkdir(parents=True, exist_ok=True)
@@ -146,6 +162,12 @@ def write_withings_csvs(
         )
     if activity is not None:
         _write_csv_lines(withings_dir / "activity.csv", "date,step_count,distance_km", activity)
+    if sleep is not None:
+        _write_csv_lines(
+            withings_dir / "sleep.csv",
+            "source,source_id,start_time,end_time,timezone,wake_date,total_sleep_min,time_in_bed_min,awake_min,awake_count,sleep_score,sleep_efficiency,light_sleep_min,deep_sleep_min,rem_sleep_min",
+            sleep,
+        )
 
 
 def _write_csv_lines(path: Path, header: str, rows: list[str]) -> None:
@@ -230,6 +252,212 @@ client_id = "client-id"
             rows,
             [{"date": "2026-05-29", "step_count": "3456", "distance_km": "2.10"}],
         )
+
+    def test_normalizes_sleep_summary_to_configured_timezone_and_wake_date(self) -> None:
+        start = int(datetime.fromisoformat("2026-06-24T15:46:00+00:00").timestamp())
+        end = int(datetime.fromisoformat("2026-06-24T22:28:00+00:00").timestamp())
+
+        rows = normalize_sleep_summaries(
+            [
+                {
+                    "id": 42,
+                    "startdate": start,
+                    "enddate": end,
+                    "timezone": "Asia/Tokyo",
+                    "data": {
+                        "asleepduration": 24120,
+                        "total_timeinbed": 25020,
+                        "wakeupduration": 900,
+                        "wakeupcount": 2,
+                        "sleep_score": 81,
+                        "sleep_efficiency": 0.96,
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(rows[0]["source_id"], "42")
+        self.assertEqual(rows[0]["start_time"], "2026-06-25T00:46:00+09:00")
+        self.assertEqual(rows[0]["end_time"], "2026-06-25T07:28:00+09:00")
+        self.assertEqual(rows[0]["wake_date"], "2026-06-25")
+        self.assertEqual(rows[0]["total_sleep_min"], "402.00")
+        self.assertEqual(rows[0]["awake_min"], "15.00")
+        self.assertEqual(rows[0]["sleep_efficiency"], "0.96")
+
+    def test_fetches_withings_sleep_summaries_in_date_windows(self) -> None:
+        session = FakeSession()
+
+        body = fetch_sleep_summaries_windowed(
+            session,
+            "access",
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 4, 15),
+        )
+
+        self.assertEqual(body, {"series": []})
+        sleep_calls = [
+            call
+            for call in session.calls
+            if call.get("data", {}).get("action") == "getsummary"
+        ]
+        self.assertEqual(len(sleep_calls), 2)
+        self.assertIn("total_sleep_time", sleep_calls[0]["data"]["data_fields"])
+
+    def test_fetches_withings_sleep_summaries_with_pagination(self) -> None:
+        class PagedSleepSession(FakeSession):
+            def post(self, *args: object, **kwargs: object) -> FakeResponse:
+                self.calls.append(kwargs)
+                data = kwargs.get("data", {})
+                if isinstance(data, dict) and data.get("action") == "getsummary":
+                    start = int(datetime.fromisoformat("2026-06-24T23:00:00+09:00").timestamp())
+                    if data.get("offset") == 10:
+                        return FakeResponse(
+                            {
+                                "series": [
+                                    {
+                                        "id": "summary-2",
+                                        "startdate": start + 86400,
+                                        "enddate": start + 90000,
+                                        "data": {"total_sleep_time": 3600},
+                                    }
+                                ],
+                                "more": False,
+                                "offset": 10,
+                            }
+                        )
+                    return FakeResponse(
+                        {
+                            "series": [
+                                {
+                                    "id": "summary-1",
+                                    "startdate": start,
+                                    "enddate": start + 3600,
+                                    "data": {"total_sleep_time": 3600},
+                                }
+                            ],
+                            "more": True,
+                            "offset": 10,
+                        }
+                    )
+                if isinstance(data, dict) and data.get("action") == "get":
+                    return FakeResponse({"model": 16, "series": []})
+                return FakeResponse({"measuregrps": []})
+
+        session = PagedSleepSession()
+
+        body = fetch_sleep_summaries_windowed(
+            session,
+            "access",
+            start_date=date(2026, 6, 25),
+            end_date=date(2026, 6, 26),
+        )
+
+        self.assertEqual([summary["id"] for summary in body["series"]], ["summary-1", "summary-2"])
+        summary_calls = [
+            call
+            for call in session.calls
+            if call.get("data", {}).get("action") == "getsummary"
+        ]
+        self.assertEqual(summary_calls[1]["data"]["offset"], 10)
+
+    def test_summarizes_sleep_states_for_local_wake_date(self) -> None:
+        start = int(datetime.fromisoformat("2026-06-24T23:00:00+09:00").timestamp())
+        states = [
+            {"startdate": start, "enddate": start + 600, "state": 0},
+            {"startdate": start + 600, "enddate": start + 4200, "state": 1},
+            {"startdate": start + 4200, "enddate": start + 6000, "state": 2},
+            {"startdate": start + 6000, "enddate": start + 7800, "state": 3},
+        ]
+
+        summary = summarize_sleep_states(states, date(2026, 6, 25))
+
+        assert summary is not None
+        self.assertEqual(summary["startdate"], start)
+        self.assertEqual(summary["enddate"], start + 7800)
+        self.assertEqual(summary["timezone"], "Asia/Tokyo")
+        self.assertEqual(summary["data"]["total_timeinbed"], 7800)
+        self.assertEqual(summary["data"]["total_sleep_time"], 7200)
+        self.assertEqual(summary["data"]["wakeupduration"], 600)
+        self.assertEqual(summary["data"]["lightsleepduration"], 3600)
+        self.assertEqual(summary["data"]["deepsleepduration"], 1800)
+        self.assertEqual(summary["data"]["remsleepduration"], 1800)
+
+    def test_sleep_summary_fetch_falls_back_to_state_data(self) -> None:
+        class SleepStateSession(FakeSession):
+            def post(self, *args: object, **kwargs: object) -> FakeResponse:
+                self.calls.append(kwargs)
+                data = kwargs.get("data", {})
+                if isinstance(data, dict) and data.get("action") == "getsummary":
+                    return FakeResponse({"series": []})
+                if isinstance(data, dict) and data.get("action") == "get":
+                    start = int(datetime.fromisoformat("2026-06-24T23:00:00+09:00").timestamp())
+                    return FakeResponse(
+                        {
+                            "model": 16,
+                            "series": [
+                                {"startdate": start, "enddate": start + 600, "state": 0},
+                                {"startdate": start + 600, "enddate": start + 4200, "state": 1},
+                            ],
+                        }
+                    )
+                return FakeResponse({"measuregrps": []})
+
+        session = SleepStateSession()
+
+        body = fetch_sleep_summaries_windowed(
+            session,
+            "access",
+            start_date=date(2026, 6, 25),
+            end_date=date(2026, 6, 25),
+        )
+
+        self.assertEqual(len(body["series"]), 1)
+        self.assertEqual(body["series"][0]["data"]["total_sleep_time"], 3600)
+        self.assertEqual(body["fallback_source"], "sleep_get")
+        self.assertEqual(
+            [call["data"]["action"] for call in session.calls],
+            ["getsummary", "get"],
+        )
+
+    def test_merges_sleep_rows_idempotently(self) -> None:
+        rows = merge_sleep_rows(
+            [{"source": "withings", "source_id": "1", "wake_date": "2026-06-24"}],
+            [
+                {"source": "withings", "source_id": "1", "wake_date": "2026-06-25"},
+                {"source": "withings", "source_id": "2", "wake_date": "2026-06-26"},
+            ],
+        )
+
+        self.assertEqual([row["source_id"] for row in rows], ["1", "2"])
+        self.assertEqual(rows[0]["wake_date"], "2026-06-25")
+
+    def test_empty_sleep_response_preserves_existing_csv_and_reports_api_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config = load_config(write_config(root))
+            write_withings_csvs(
+                data_dir,
+                sleep=[
+                    "withings,1,2026-06-24T23:00:00+09:00,2026-06-25T07:00:00+09:00,Asia/Tokyo,2026-06-25,450.00,,,,,,,,",
+                ],
+            )
+            existing = config.withings.sleep_csv.read_text(encoding="utf-8")
+            stderr = io.StringIO()
+
+            with contextlib.redirect_stderr(stderr):
+                written = write_sleep(
+                    config,
+                    {"series": []},
+                    raw_name="sleep_sync.json",
+                    merge=True,
+                )
+
+            self.assertEqual(written, [config.withings.raw_dir / "sleep_sync.json"])
+            self.assertEqual(config.withings.sleep_csv.read_text(encoding="utf-8"), existing)
+            self.assertIn("may not be available through the public API", stderr.getvalue())
+            self.assertIn("imported from Apple Health", stderr.getvalue())
+            self.assertIn("Existing sleep.csv was preserved", stderr.getvalue())
 
     def test_ignores_strength_training_category_duplicate(self) -> None:
         rows = normalize_workouts(

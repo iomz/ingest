@@ -1157,6 +1157,101 @@ class ContextTest(unittest.TestCase):
             self.assertIn("| Weight | 70.50 kg |", content)
             self.assertNotIn("71.00", content)
 
+    def test_renders_withings_sleep_on_local_wake_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n',
+                encoding="utf-8",
+            )
+            withings_dir = data_dir / "withings"
+            withings_dir.mkdir(parents=True)
+            (withings_dir / "sleep.csv").write_text(
+                "\n".join(
+                    [
+                        "source,source_id,start_time,end_time,timezone,wake_date,total_sleep_min,time_in_bed_min,awake_min,awake_count,sleep_score,sleep_efficiency,light_sleep_min,deep_sleep_min,rem_sleep_min",
+                        "withings,s1,2026-06-24T00:46:00+09:00,2026-06-24T07:28:00+09:00,Asia/Tokyo,2026-06-24,402.00,417.00,15.00,2,81,0.96,,,",
+                        "withings,s2,2026-06-24T23:46:00+09:00,2026-06-25T06:28:00+09:00,Asia/Tokyo,2026-06-25,402.00,417.00,15.00,2,81,0.96,210.00,120.00,72.00",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            written = generate_daily_context(config, date(2026, 6, 25))
+            content = written.read_text(encoding="utf-8")
+
+            self.assertIn("| Sleep | 6h42m · 23:46–06:28 |", content)
+            self.assertNotIn("## Sleep", content)
+            self.assertNotIn("| Duration | 6h42m |", content)
+            self.assertNotIn("| Awake time | 0h15m |", content)
+            self.assertNotIn("| Awake count | 2 |", content)
+            self.assertNotIn("| Sleep score | 81 |", content)
+            self.assertNotIn("| Sleep efficiency | 96% |", content)
+            self.assertIn("- Sleep source: Withings", content)
+            self.assertIn("Sleep: 6h42m, 23:46–06:28, source Withings.", content)
+            self.assertNotIn("2026-06-24T00:46", content)
+            self.assertNotIn("readiness", content.lower())
+            self.assertNotIn("recovery score", content.lower())
+            self.assertNotIn("sleep-adjusted TSS", content)
+
+    def test_missing_sleep_does_not_crash_and_is_only_missing_after_history_starts(self) -> None:
+        content_without_history = render_daily_context(date(2026, 6, 25), [])
+        content_with_history = render_daily_context(
+            date(2026, 6, 25),
+            [],
+            historical_sleep_records=[
+                {
+                    "source": "withings",
+                    "source_id": "s1",
+                    "wake_date": "2026-06-24",
+                    "total_sleep_min": "420",
+                }
+            ],
+        )
+
+        self.assertIn("- Sleep source: None", content_without_history)
+        self.assertNotIn("sleep unavailable", content_without_history)
+        self.assertIn("- Sleep source: None", content_with_history)
+        self.assertIn("sleep unavailable", content_with_history)
+
+    def test_terminal_context_renders_sleep_snapshot_and_coverage(self) -> None:
+        sleep = {
+            "source": "withings",
+            "source_id": "s1",
+            "start_time": "2026-06-24T23:46:00+09:00",
+            "end_time": "2026-06-25T06:28:00+09:00",
+            "timezone": "Asia/Tokyo",
+            "wake_date": "2026-06-25",
+            "total_sleep_min": "402.00",
+            "awake_min": "15.00",
+            "awake_count": "2",
+        }
+        state = DailyState(
+            target_date=date(2026, 6, 25),
+            activities=[],
+            measures=[],
+            withings_activity_summaries=[],
+            historical_withings_activity_summaries=[],
+            historical_activities=[],
+            historical_measures=[],
+            hevy_sets=[],
+            sleep_records=[sleep],
+            historical_sleep_records=[sleep],
+        )
+        output = io.StringIO()
+        console = Console(file=output, width=120, color_system=None, force_terminal=False)
+
+        render_daily_terminal_context(state, console)
+
+        content = output.getvalue()
+        self.assertIn("Sleep     6h42m / 23:46–06:28", content)
+        self.assertIn("Sleep source    Withings", content)
+        self.assertNotIn("Awake time   0h15m", content)
+
     def test_renders_zero_withings_steps_when_daily_activity_row_is_zero(self) -> None:
         content = render_daily_context(
             date(2026, 5, 29),

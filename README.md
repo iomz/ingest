@@ -20,9 +20,14 @@ Sources
   -> Brain
 ```
 
-Current code fetches Withings data, imports Hevy workout exports, writes local
-records, builds a `DailyState`, and renders AI-readable daily context. Suunto activities can optionally be fetched through `suuntool`. Future
+Current code fetches Withings body, activity, workout, and sleep-summary data,
+imports Hevy workout exports, writes local records, builds a `DailyState`, and
+renders AI-readable daily context. Suunto activities can optionally be fetched through `suuntool`. Future
 OpenAI API calls and Brain vault writes belong after rendered context.
+
+Sleep summaries use Withings as baseline and are assigned to local wake date.
+Sleep Cycle CSV enrichment for sleep quality, wake mood, and notes remains a
+possible later extension.
 
 ## Derived Metrics
 

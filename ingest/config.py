@@ -26,6 +26,7 @@ class WithingsConfig:
     measures_csv: Path
     activity_csv: Path
     workouts_csv: Path
+    sleep_csv: Path
     raw_dir: Path
     days: int
 
@@ -212,6 +213,12 @@ def _load_withings_config(data: dict[str, Any], data_dir: Path) -> WithingsConfi
             withings,
             "withings.workouts_csv",
             Path("withings/workouts.csv"),
+        ),
+        sleep_csv=_configured_data_path(
+            data_dir,
+            withings,
+            "withings.sleep_csv",
+            Path("withings/sleep.csv"),
         ),
         raw_dir=_configured_data_path(data_dir, withings, "withings.raw_dir", Path("withings/raw")),
         days=_positive_int(sync.get("days", 30), "sync.withings.days"),
