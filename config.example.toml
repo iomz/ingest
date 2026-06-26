@@ -20,6 +20,8 @@ refresh_token = ""
 # Optional fallback for one-off runs when refresh_token is not configured.
 access_token = ""
 expires_at = 0
+# Optional normalized sleep summary output path.
+sleep_csv = "withings/sleep.csv"
 
 [sync.withings]
 # Number of days to fetch when no local Withings data exists.

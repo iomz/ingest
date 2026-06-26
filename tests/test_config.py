@@ -38,6 +38,7 @@ days = 21
             self.assertEqual(config.withings.measures_csv, root / "app-data/withings/body_measures.csv")
             self.assertEqual(config.withings.activity_csv, root / "app-data/withings/activity.csv")
             self.assertEqual(config.withings.workouts_csv, root / "app-data/withings/workouts.csv")
+            self.assertEqual(config.withings.sleep_csv, root / "app-data/withings/sleep.csv")
             self.assertEqual(config.withings.raw_dir, root / "app-data/withings/raw")
             self.assertEqual(config.withings.days, 21)
             self.assertEqual(config.hevy.workouts_csv, root / "app-data/hevy/workouts.csv")

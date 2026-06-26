@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -15,6 +16,7 @@ TOKEN_URL = "https://wbsapi.withings.net/v2/oauth2"
 AUTHORIZE_URL = "https://account.withings.com/oauth2_user/authorize2"
 MEASURE_URL = "https://wbsapi.withings.net/measure"
 WORKOUT_URL = "https://wbsapi.withings.net/v2/measure"
+SLEEP_URL = "https://wbsapi.withings.net/v2/sleep"
 TIMEOUT_SECONDS = 30
 BACKFILL_WINDOW_DAYS = 90
 WITHINGS_SCOPES = "user.metrics,user.activity"
@@ -62,6 +64,24 @@ WORKOUT_FIELDS = [
     "raw_type",
 ]
 
+SLEEP_FIELDS = [
+    "source",
+    "source_id",
+    "start_time",
+    "end_time",
+    "timezone",
+    "wake_date",
+    "total_sleep_min",
+    "time_in_bed_min",
+    "awake_min",
+    "awake_count",
+    "sleep_score",
+    "sleep_efficiency",
+    "light_sleep_min",
+    "deep_sleep_min",
+    "rem_sleep_min",
+]
+
 WORKOUT_CATEGORIES = {
     1: "walk",
     2: "run",
@@ -101,6 +121,7 @@ def lagging_local_date(config: AppConfig) -> date | None:
         latest_measure_date(read_measure_rows(config.withings.measures_csv)),
         latest_activity_date(read_activity_rows(config.withings.activity_csv)),
         latest_workout_date(read_workout_rows(config.withings.workouts_csv)),
+        latest_sleep_date(read_sleep_rows(config.withings.sleep_csv)),
     ]
     present_dates = [value for value in latest_dates if value is not None]
     if not present_dates:
@@ -142,6 +163,13 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
             start_date=start_date,
             end_date=end_date,
         )
+        sleep = fetch_sleep_summaries_windowed(
+            session,
+            access_token,
+            start_date=start_date,
+            end_date=end_date,
+            local_timezone=config.timezone,
+        )
 
     measures = _with_latest_height(measures, height)
     written_paths = write_measures(config, measures, raw_name=raw_name, merge=True)
@@ -149,6 +177,8 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
     written_paths.extend(write_activity(config, activity, raw_name=activity_raw_name, merge=True))
     workout_raw_name = raw_name.replace("body_measures", "workouts")
     written_paths.extend(write_workouts(config, workouts, raw_name=workout_raw_name, merge=True))
+    sleep_raw_name = raw_name.replace("body_measures", "sleep")
+    written_paths.extend(write_sleep(config, sleep, raw_name=sleep_raw_name, merge=True))
     return written_paths
 
 
@@ -403,6 +433,48 @@ def fetch_activity(
     return _withings_body(response, "Withings activity request failed")
 
 
+def fetch_sleep_summaries(
+    session: Any,
+    access_token: str,
+    *,
+    start_date: date,
+    end_date: date,
+    offset: int = 0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "action": "getsummary",
+        "startdateymd": start_date.isoformat(),
+        "enddateymd": end_date.isoformat(),
+        "data_fields": ",".join(
+            [
+                "total_sleep_time",
+                "total_timeinbed",
+                "asleepduration",
+                "wakeupduration",
+                "wakeupcount",
+                "sleep_score",
+                "sleep_efficiency",
+                "lightsleepduration",
+                "deepsleepduration",
+                "remsleepduration",
+            ]
+        ),
+    }
+    if offset:
+        payload["offset"] = offset
+
+    try:
+        response = session.post(
+            SLEEP_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+            data=payload,
+            timeout=TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        raise SystemExit(f"Could not reach Withings sleep endpoint: {exc}") from exc
+    return _withings_body(response, "Withings sleep request failed")
+
+
 def fetch_activity_windowed(
     session: Any,
     access_token: str,
@@ -424,6 +496,174 @@ def fetch_activity_windowed(
         activities.extend(window_activities)
         window_start = window_end + timedelta(days=1)
     return {"activities": activities}
+
+
+def fetch_sleep_summaries_windowed(
+    session: Any,
+    access_token: str,
+    *,
+    start_date: date,
+    end_date: date,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> dict[str, Any]:
+    if start_date > end_date:
+        raise SystemExit("Withings start date must be on or before end date.")
+
+    series: list[dict[str, Any]] = []
+    window_start = start_date
+    while window_start <= end_date:
+        window_end = min(window_start + timedelta(days=BACKFILL_WINDOW_DAYS - 1), end_date)
+        offset = 0
+        while True:
+            body = fetch_sleep_summaries(
+                session,
+                access_token,
+                start_date=window_start,
+                end_date=window_end,
+                offset=offset,
+            )
+            window_series = body.get("series", [])
+            if not isinstance(window_series, list):
+                raise SystemExit("Withings sleep response did not contain series.")
+            series.extend(window_series)
+            if not body.get("more"):
+                break
+            next_offset = _int_or_zero(body.get("offset"))
+            if next_offset <= offset:
+                raise SystemExit("Withings sleep response requested pagination without a valid next offset.")
+            offset = next_offset
+        window_start = window_end + timedelta(days=1)
+    summary_dates = {
+        datetime.fromtimestamp(_int_or_zero(summary.get("enddate")), tz=local_timezone).date()
+        for summary in series
+        if _int_or_zero(summary.get("enddate"))
+    }
+    fallback_series: list[dict[str, Any]] = []
+    wake_date = start_date
+    while wake_date <= end_date:
+        if wake_date not in summary_dates:
+            fallback_series.extend(
+                fetch_sleep_states_as_summaries(
+                    session,
+                    access_token,
+                    start_date=wake_date,
+                    end_date=wake_date,
+                    local_timezone=local_timezone,
+                )
+            )
+        wake_date += timedelta(days=1)
+    body: dict[str, Any] = {"series": [*series, *fallback_series]}
+    if fallback_series:
+        body["fallback_source"] = "sleep_get"
+    return body
+
+
+def fetch_sleep_states_as_summaries(
+    session: Any,
+    access_token: str,
+    *,
+    start_date: date,
+    end_date: date,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    wake_date = start_date
+    while wake_date <= end_date:
+        window_start = datetime.combine(
+            wake_date - timedelta(days=1),
+            time(12),
+            tzinfo=local_timezone,
+        )
+        window_end = datetime.combine(
+            wake_date,
+            time(11, 59, 59),
+            tzinfo=local_timezone,
+        )
+        states = fetch_sleep_states(
+            session,
+            access_token,
+            start_timestamp=int(window_start.timestamp()),
+            end_timestamp=int(window_end.timestamp()),
+        )
+        summary = summarize_sleep_states(states, wake_date, local_timezone)
+        if summary is not None:
+            summaries.append(summary)
+        wake_date += timedelta(days=1)
+    return summaries
+
+
+def fetch_sleep_states(
+    session: Any,
+    access_token: str,
+    *,
+    start_timestamp: int,
+    end_timestamp: int,
+) -> list[dict[str, Any]]:
+    try:
+        response = session.post(
+            SLEEP_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+            data={
+                "action": "get",
+                "startdate": start_timestamp,
+                "enddate": end_timestamp,
+            },
+            timeout=TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        raise SystemExit(f"Could not reach Withings sleep endpoint: {exc}") from exc
+    body = _withings_body(response, "Withings sleep states request failed")
+    series = body.get("series", [])
+    if not isinstance(series, list):
+        raise SystemExit("Withings sleep states response did not contain series.")
+    return series
+
+
+def summarize_sleep_states(
+    states: list[dict[str, Any]],
+    wake_date: date,
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> dict[str, Any] | None:
+    valid_states = [
+        state
+        for state in states
+        if _int_or_zero(state.get("startdate"))
+        and _int_or_zero(state.get("enddate")) > _int_or_zero(state.get("startdate"))
+    ]
+    if not valid_states:
+        return None
+
+    start_timestamp = min(_int_or_zero(state.get("startdate")) for state in valid_states)
+    end_timestamp = max(_int_or_zero(state.get("enddate")) for state in valid_states)
+    if datetime.fromtimestamp(end_timestamp, tz=local_timezone).date() != wake_date:
+        return None
+
+    durations = {
+        sleep_state: sum(
+            _int_or_zero(state.get("enddate")) - _int_or_zero(state.get("startdate"))
+            for state in valid_states
+            if _int_or_zero(state.get("state")) == sleep_state
+        )
+        for sleep_state in range(4)
+    }
+    total_sleep_time = durations[1] + durations[2] + durations[3]
+    if total_sleep_time <= 0:
+        return None
+
+    return {
+        "id": f"states-{start_timestamp}-{end_timestamp}",
+        "startdate": start_timestamp,
+        "enddate": end_timestamp,
+        "timezone": local_timezone.key,
+        "data": {
+            "total_timeinbed": sum(durations.values()),
+            "total_sleep_time": total_sleep_time,
+            "wakeupduration": durations[0],
+            "lightsleepduration": durations[1],
+            "deepsleepduration": durations[2],
+            "remsleepduration": durations[3],
+        },
+    }
 
 
 def fetch_workouts_windowed(
@@ -540,6 +780,35 @@ def write_activity(
     return written_paths
 
 
+def write_sleep(
+    config: AppConfig,
+    body: dict[str, Any],
+    *,
+    raw_name: str = "sleep.json",
+    merge: bool = False,
+) -> list[Path]:
+    written_paths: list[Path] = []
+    series = body.get("series", [])
+    if not isinstance(series, list):
+        raise SystemExit("Withings sleep response did not contain series.")
+
+    written_paths.append(write_json_file(config.withings.raw_dir / raw_name, body))
+    if not series:
+        print(
+            "Withings sleep API returned no summaries. Sleep visible in the Withings app may not be "
+            "available through the public API, including sleep imported from Apple Health. "
+            "Existing sleep.csv was preserved.",
+            file=sys.stderr,
+        )
+        return written_paths
+
+    rows = normalize_sleep_summaries(series, config.timezone)
+    if merge:
+        rows = merge_sleep_rows(read_sleep_rows(config.withings.sleep_csv), rows)
+    written_paths.append(write_csv_file(config.withings.sleep_csv, rows, SLEEP_FIELDS))
+    return written_paths
+
+
 def read_measure_rows(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -568,6 +837,14 @@ def read_activity_rows(path: Path) -> list[dict[str, Any]]:
         return list(csv.DictReader(csv_file))
 
 
+def read_sleep_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
 def latest_measure_date(rows: list[dict[str, Any]]) -> date | None:
     return _latest_date(_date_from_iso(row.get("date")) for row in rows)
 
@@ -578,6 +855,10 @@ def latest_workout_date(rows: list[dict[str, Any]]) -> date | None:
 
 def latest_activity_date(rows: list[dict[str, Any]]) -> date | None:
     return _latest_date(_date_from_iso(row.get("date")) for row in rows)
+
+
+def latest_sleep_date(rows: list[dict[str, Any]]) -> date | None:
+    return _latest_date(_date_from_iso(row.get("wake_date")) for row in rows)
 
 
 def merge_measure_rows(
@@ -633,6 +914,23 @@ def merge_activity_rows(
     return sorted(rows_by_date.values(), key=lambda row: str(row.get("date", "")))
 
 
+def merge_sleep_rows(
+    existing_rows: list[dict[str, Any]],
+    new_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in [*existing_rows, *new_rows]:
+        rows_by_key[(str(row.get("source", "")), str(row.get("source_id", "")))] = row
+    return sorted(
+        rows_by_key.values(),
+        key=lambda row: (
+            str(row.get("wake_date", "")),
+            str(row.get("end_time", "")),
+            str(row.get("source_id", "")),
+        ),
+    )
+
+
 def normalize_measure_groups(
     measuregrps: list[dict[str, Any]],
     local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
@@ -674,6 +972,47 @@ def normalize_activity_summaries(activities: list[dict[str, Any]]) -> list[dict[
                 "date": str(activity.get("date", "")),
                 "step_count": str(activity.get("steps", "")),
                 "distance_km": _meters_to_km(activity.get("distance")),
+            }
+        )
+    return rows
+
+
+def normalize_sleep_summaries(
+    series: list[dict[str, Any]],
+    local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for summary in series:
+        start_timestamp = _int_or_zero(summary.get("startdate"))
+        end_timestamp = _int_or_zero(summary.get("enddate"))
+        if not start_timestamp or not end_timestamp:
+            continue
+        data = summary.get("data", {})
+        if not isinstance(data, dict):
+            data = {}
+        start_time = datetime.fromtimestamp(start_timestamp, tz=local_timezone)
+        end_time = datetime.fromtimestamp(end_timestamp, tz=local_timezone)
+        rows.append(
+            {
+                "source": "withings",
+                "source_id": str(summary.get("id") or f"{start_timestamp}-{end_timestamp}"),
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "timezone": str(summary.get("timezone") or local_timezone.key),
+                "wake_date": end_time.date().isoformat(),
+                "total_sleep_min": _seconds_to_minutes(
+                    data.get("total_sleep_time")
+                    or data.get("asleepduration")
+                    or _stage_sleep_seconds(data)
+                ),
+                "time_in_bed_min": _seconds_to_minutes(data.get("total_timeinbed")),
+                "awake_min": _seconds_to_minutes(data.get("wakeupduration")),
+                "awake_count": _optional_number(data.get("wakeupcount")),
+                "sleep_score": _optional_number(data.get("sleep_score")),
+                "sleep_efficiency": _optional_decimal(data.get("sleep_efficiency")),
+                "light_sleep_min": _seconds_to_minutes(data.get("lightsleepduration")),
+                "deep_sleep_min": _seconds_to_minutes(data.get("deepsleepduration")),
+                "rem_sleep_min": _seconds_to_minutes(data.get("remsleepduration")),
             }
         )
     return rows
@@ -737,6 +1076,36 @@ def _workout_distance_km(data: dict[str, Any]) -> str:
 def _meters_to_km(value: Any) -> str:
     distance = _float_or_zero(value)
     return f"{distance / 1000:.2f}" if distance else ""
+
+
+def _stage_sleep_seconds(data: dict[str, Any]) -> int:
+    return sum(
+        _int_or_zero(data.get(field))
+        for field in ("lightsleepduration", "deepsleepduration", "remsleepduration")
+    )
+
+
+def _seconds_to_minutes(value: Any) -> str:
+    seconds = _int_or_zero(value)
+    return f"{seconds / 60:.2f}" if seconds else ""
+
+
+def _optional_number(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        return str(int(value))
+    except (TypeError, ValueError):
+        return ""
+
+
+def _optional_decimal(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        return f"{float(value):.4f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return ""
 
 
 def _measure_value(measure: dict[str, Any]) -> str:
