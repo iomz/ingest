@@ -426,8 +426,9 @@ class ContextTest(unittest.TestCase):
         )
         self.assertIn("- Run: Morning Run (5.00 km, 30 min)", content)
         self.assertIn("## Body", content)
-        self.assertIn("| Weight | 70.50 kg |", content)
-        self.assertIn("| Body fat | 18.42 % · 12.99 kg fat mass |", content)
+        self.assertIn("| Weight | 70.50 kg / fat 18.42% (12.99 kg) / muscle Unknown |", content)
+        self.assertIn("| Mass | FFM Unknown / water Unknown / bone Unknown |", content)
+        self.assertNotIn("| Body fat |", content)
         self.assertNotIn("| BMR |", content)
         self.assertNotIn("Assumptions:", content)
         self.assertNotIn("Total swimming distance: 0.00 km", content)
@@ -450,11 +451,13 @@ class ContextTest(unittest.TestCase):
         )
 
         self.assertNotIn("| height |", content)
-        self.assertIn("| Fat-free mass | 68.60 kg |", content)
-        self.assertIn("| ----- |  |\n| BMI | 30.56 |\n| BMR | 1852 kcal/day |", content)
+        self.assertIn("| Mass | FFM 68.60 kg / water Unknown / bone Unknown |", content)
+        self.assertIn("| Index | BMI 30.56 / BMR 1852 kcal/day |", content)
+        self.assertNotIn("| Fat-free mass |", content)
+        self.assertNotIn("| ----- |", content)
         self.assertNotIn("| Derived metrics |", content)
-        self.assertIn("| BMI | 30.56 |", content)
-        self.assertIn("| BMR | 1852 kcal/day |", content)
+        self.assertNotIn("| BMI | 30.56 |", content)
+        self.assertNotIn("| BMR | 1852 kcal/day |", content)
         self.assertIn("Current weight is 99.00 kg. Weight trend is Unknown. BMI is 30.56. BMR is 1852 kcal/day.", content)
 
     def test_rounds_bmr_to_nearest_integer(self) -> None:
@@ -464,7 +467,7 @@ class ContextTest(unittest.TestCase):
             [body_measure(date(2026, 5, 29), "fat_free_mass", 68.57)],
         )
 
-        self.assertIn("| BMR | 1851 kcal/day |", content)
+        self.assertIn("| Index | BMR 1851 kcal/day |", content)
 
     def test_omits_bmr_without_fat_free_mass(self) -> None:
         content = render_daily_context(
