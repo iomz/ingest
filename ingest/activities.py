@@ -27,6 +27,9 @@ class NormalizedActivity:
     tss_method: str = ""
     intensity_factor: float | None = None
     recovery_time_seconds: float | None = None
+    detail_source: str = ""
+    detail_source_id: str = ""
+    detail_name: str = ""
 
 
 def normalize_withings_activity(
@@ -64,6 +67,12 @@ def normalize_activity(
     )
     distance_km = _optional_float(activity.get("distance_km", ""))
     raw_type = activity.get("raw_type") or activity.get("activity_type") or "Unknown"
+    activity_type = activity.get("activity_type") or raw_type
+    name = activity.get("name", "")
+    if source == "suunto":
+        raw_type = _legacy_suunto_activity_label(raw_type)
+        activity_type = _legacy_suunto_activity_label(activity_type)
+        name = _legacy_suunto_name(name, raw_type)
     return NormalizedActivity(
         source=source,
         source_id=activity.get("source_id", "") or activity.get("id", "") or start_time,
@@ -71,9 +80,9 @@ def normalize_activity(
         end_time=end_time,
         duration_min=duration_min,
         distance_km=distance_km,
-        activity_type=canonical_activity_type(activity.get("activity_type") or raw_type),
+        activity_type=canonical_activity_type(activity_type),
         raw_type=raw_type,
-        name=activity.get("name", ""),
+        name=name,
         notes=activity.get("notes", "") or activity.get("description", ""),
         step_count=_int_value(activity.get("step_count", "") or activity.get("steps", "")),
         energy_kcal=_optional_float(activity.get("energy_kcal", "")),
@@ -119,6 +128,20 @@ def canonical_activity_type(raw_type: str) -> str:
     }:
         return "strength"
     return value or "unknown"
+
+
+def _legacy_suunto_activity_label(label: str) -> str:
+    value = label.strip().lower().replace("_", " ")
+    return {
+        "activity 17": "INDOOR",
+        "activity 55": "CROSSTRAINER",
+    }.get(value, label)
+
+
+def _legacy_suunto_name(name: str, raw_type: str) -> str:
+    if name.strip().lower() not in {"activity 17", "activity 55"}:
+        return name
+    return raw_type.replace("_", " ").title()
 
 
 def _parse_time(value: str) -> datetime | None:
