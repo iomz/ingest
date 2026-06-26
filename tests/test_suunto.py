@@ -204,6 +204,19 @@ command = "{command_path}"
         self.assertEqual(rows[0]["raw_type"], "activity_999")
         self.assertEqual(rows[0]["activity_type"], "activity 999")
 
+    def test_names_known_indoor_and_crosstrainer_activity_ids(self) -> None:
+        rows = suunto.normalize_workouts(
+            [
+                {"key": "indoor", "activityId": 17, "startTime": 1_782_255_600_000},
+                {"key": "crosstrainer", "activityId": 55, "startTime": 1_782_259_200_000},
+            ]
+        )
+
+        self.assertEqual(rows[0]["raw_type"], "INDOOR")
+        self.assertEqual(rows[0]["name"], "Indoor")
+        self.assertEqual(rows[1]["raw_type"], "CROSSTRAINER")
+        self.assertEqual(rows[1]["name"], "Crosstrainer")
+
     def test_normalizes_workout_timestamps_in_utc(self) -> None:
         start_ms = int(datetime(2026, 6, 2, 23, 30, tzinfo=timezone.utc).timestamp() * 1000)
 
@@ -391,6 +404,338 @@ command = "{command_path}"
             self.assertIn("HR        avg 120 / max 170", terminal_output.getvalue())
             self.assertIn("Energy    600 kcal", terminal_output.getvalue())
             self.assertNotIn("recovery", content.lower())
+
+    def test_report_pairs_hevy_and_suunto_strength_as_one_enriched_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            hevy_dir = data_dir / "hevy"
+            hevy_dir.mkdir(parents=True)
+            (hevy_dir / "workouts.csv").write_text(
+                "\n".join(
+                    [
+                        "source,source_id,start_time,end_time,duration_min,distance_km,activity_type,raw_type,name",
+                        "hevy,lower-body,2026-06-05T13:52:00,2026-06-05T15:25:00,93.00,,strength,strength,Lower body",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (hevy_dir / "sets.csv").write_text(
+                "\n".join(
+                    [
+                        "source,source_id,workout_source_id,workout_name,start_time,exercise,set_index,set_type,weight_kg,reps,distance_km,duration_seconds,rpe,volume_kg",
+                        "hevy,s1,lower-body,Lower body,2026-06-05T13:52:00,Squat,1,normal,100,5,,,,500",
+                        "hevy,s2,lower-body,Lower body,2026-06-05T13:52:00,Squat,2,normal,100,5,,,,500",
+                        "hevy,s3,lower-body,Lower body,2026-06-05T13:52:00,Deadlift,1,normal,140,5,,,,700",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            suunto_dir = data_dir / "suunto"
+            suunto_dir.mkdir(parents=True)
+            (suunto_dir / "workouts.csv").write_text(
+                "\n".join(
+                    [
+                        ",".join(suunto.WORKOUT_FIELDS),
+                        "suunto,strength-1,2026-06-05T04:00:00+00:00,2026-06-05T05:12:00+00:00,72.00,,0,strength,STRENGTH,Strength,,420,118,156,38.4,HR,,",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            state = build_daily_state(config, date(2026, 6, 5))
+            content = generate_daily_context(config, date(2026, 6, 5)).read_text(
+                encoding="utf-8"
+            )
+            terminal_output = io.StringIO()
+            render_daily_terminal_context(
+                state,
+                Console(
+                    file=terminal_output,
+                    width=160,
+                    color_system=None,
+                    force_terminal=False,
+                ),
+            )
+
+            self.assertEqual(len(state.activities), 1)
+            self.assertEqual(state.activities[0].source, "suunto")
+            self.assertEqual(state.activities[0].detail_source_id, "lower-body")
+            self.assertEqual(state.activities[0].duration_min, 72.0)
+            self.assertEqual(state.activities[0].tss_score, 38.4)
+            self.assertIn("| Strength | Lower body · 72 min · 3 sets · 1700 kg |", content)
+            self.assertIn("| Load | TSS 38.4", content)
+            self.assertIn("| HR | avg 118 · max 156 |", content)
+            self.assertIn("| Energy | 420 kcal |", content)
+            self.assertIn(
+                "- STRENGTH suunto:strength-1 / 72 min / 420 kcal / "
+                "HR 118-156 / TSS(hr) 38.4",
+                content,
+            )
+            self.assertIn("  - Hevy Lower body / 3 sets / 1700 kg volume", content)
+            self.assertIn("- Workout source: Hevy, Suunto", content)
+            self.assertIn("- Activity count: 1 primary", content)
+            self.assertIn(
+                "suunto:strength-1 / 72 min / 420 kcal / HR 118-156 / TSS(hr) 38.4",
+                terminal_output.getvalue(),
+            )
+            self.assertIn(
+                "Hevy Lower body / 3 sets / 1,700 kg volume",
+                terminal_output.getvalue(),
+            )
+
+    def test_unpaired_hevy_strength_has_details_without_tss(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 5),
+            [
+                {
+                    "source": "hevy",
+                    "source_id": "hevy-only",
+                    "start_time": "2026-06-05T13:00:00+09:00",
+                    "duration_min": "60",
+                    "activity_type": "strength",
+                    "name": "Upper body",
+                }
+            ],
+            hevy_sets=[
+                {
+                    "workout_source_id": "hevy-only",
+                    "exercise": "Bench Press",
+                    "weight_kg": "80",
+                    "reps": "5",
+                    "volume_kg": "400",
+                }
+            ],
+        )
+
+        self.assertIn("| Strength | Upper body · 60 min · 1 sets · 400 kg |", content)
+        self.assertIn("- Upper body: 60 min", content)
+        self.assertNotIn("| Load |", content)
+        self.assertNotIn("TSS(hr)", content)
+
+    def test_unpaired_suunto_strength_keeps_load_hr_and_energy(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 5),
+            [
+                {
+                    "source": "suunto",
+                    "source_id": "suunto-only",
+                    "start_time": "2026-06-05T13:00:00+09:00",
+                    "duration_min": "45",
+                    "activity_type": "strength",
+                    "raw_type": "GYM",
+                    "name": "Gym",
+                    "energy_kcal": "300",
+                    "avg_hr": "110",
+                    "max_hr": "150",
+                    "tss_score": "25",
+                    "tss_method": "HR",
+                }
+            ],
+        )
+
+        self.assertIn("| Strength | Gym · 45 min |", content)
+        self.assertIn("| Load | TSS 25.0", content)
+        self.assertIn("| HR | avg 110 · max 150 |", content)
+        self.assertIn("| Energy | 300 kcal |", content)
+        self.assertIn("- Gym: 45 min / 300 kcal / HR 110-150 / TSS(hr) 25.0", content)
+
+    def test_ambiguous_strength_pairing_keeps_all_sessions_visible(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 5),
+            [
+                {
+                    "source": "hevy",
+                    "source_id": "hevy-a",
+                    "start_time": "2026-06-05T13:00:00+09:00",
+                    "duration_min": "60",
+                    "activity_type": "strength",
+                    "name": "Routine A",
+                },
+                {
+                    "source": "hevy",
+                    "source_id": "hevy-b",
+                    "start_time": "2026-06-05T13:10:00+09:00",
+                    "duration_min": "60",
+                    "activity_type": "strength",
+                    "name": "Routine B",
+                },
+                {
+                    "source": "suunto",
+                    "source_id": "suunto-ambiguous",
+                    "start_time": "2026-06-05T13:05:00+09:00",
+                    "duration_min": "55",
+                    "activity_type": "strength",
+                    "raw_type": "GYM",
+                    "name": "Gym",
+                    "tss_score": "30",
+                    "tss_method": "HR",
+                },
+            ],
+        )
+
+        self.assertIn("- Routine A: 60 min", content)
+        self.assertIn("- Routine B: 60 min", content)
+        self.assertIn("- Gym: 55 min / TSS(hr) 30.0", content)
+        self.assertIn("- Activity count: 3 primary", content)
+
+    def test_indoor_strength_pairing_allows_small_end_gap(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 26),
+            [
+                {
+                    "source": "hevy",
+                    "source_id": "hevy-gap",
+                    "start_time": "2026-06-26T13:00:00+09:00",
+                    "duration_min": "60",
+                    "activity_type": "strength",
+                    "name": "Lower body",
+                },
+                {
+                    "source": "suunto",
+                    "source_id": "activity_17",
+                    "start_time": "2026-06-26T14:05:00+09:00",
+                    "duration_min": "55",
+                    "activity_type": "indoor",
+                    "raw_type": "INDOOR",
+                    "name": "Indoor",
+                    "energy_kcal": "420",
+                    "avg_hr": "118",
+                    "max_hr": "156",
+                    "tss_score": "38.4",
+                    "tss_method": "HR",
+                },
+            ],
+            hevy_sets=[
+                {
+                    "workout_source_id": "hevy-gap",
+                    "exercise": "Squat",
+                    "weight_kg": "100",
+                    "reps": "5",
+                    "volume_kg": "500",
+                }
+            ],
+        )
+
+        self.assertIn("| Strength | Lower body · 55 min · 1 sets · 500 kg |", content)
+        self.assertIn("| Load | TSS 38.4", content)
+        self.assertIn(
+            "- INDOOR suunto:activity_17 / 55 min / 420 kcal / HR 118-156 / TSS(hr) 38.4",
+            content,
+        )
+        self.assertIn("  - Hevy Lower body / 1 sets / 500 kg volume", content)
+        self.assertIn("- Activity count: 1 primary", content)
+        self.assertNotIn("unknown distance", content)
+
+    def test_persisted_activity_17_strength_pairing_uses_indoor_label(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 26),
+            [
+                {
+                    "source": "hevy",
+                    "source_id": "hevy-overlap",
+                    "start_time": "2026-06-26T16:08:00+09:00",
+                    "duration_min": "52",
+                    "activity_type": "strength",
+                    "name": "Lower",
+                },
+                {
+                    "source": "suunto",
+                    "source_id": "activity_17",
+                    "start_time": "2026-06-26T15:58:08+09:00",
+                    "end_time": "2026-06-26T17:01:30+09:00",
+                    "duration_min": "63.35",
+                    "activity_type": "activity 17",
+                    "raw_type": "activity_17",
+                    "name": "Activity 17",
+                    "energy_kcal": "448",
+                    "avg_hr": "115",
+                    "max_hr": "153",
+                    "tss_score": "45.12153",
+                    "tss_method": "HR",
+                },
+            ],
+            hevy_sets=[
+                {
+                    "workout_source_id": "hevy-overlap",
+                    "exercise": "Squat",
+                    "weight_kg": "40",
+                    "reps": "8",
+                    "volume_kg": "320",
+                }
+            ],
+        )
+
+        self.assertIn("| Strength | Lower · 63 min · 1 sets · 320 kg |", content)
+        self.assertIn(
+            "- INDOOR suunto:activity_17 / 63 min / 448 kcal / HR 115-153 / TSS(hr) 45.1",
+            content,
+        )
+        self.assertIn("  - Hevy Lower / 1 sets / 320 kg volume", content)
+        self.assertIn("- Activity count: 1 primary", content)
+        self.assertNotIn("Activity 17", content)
+
+    def test_crosstrainer_without_distance_renders_as_other_duration_activity(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 26),
+            [
+                {
+                    "source": "suunto",
+                    "source_id": "activity_55",
+                    "start_time": "2026-06-26T15:30:00+09:00",
+                    "duration_min": "35",
+                    "activity_type": "crosstrainer",
+                    "raw_type": "CROSSTRAINER",
+                    "name": "Crosstrainer",
+                    "energy_kcal": "260",
+                    "avg_hr": "120",
+                    "max_hr": "150",
+                    "tss_score": "22",
+                    "tss_method": "HR",
+                }
+            ],
+        )
+
+        self.assertIn("### Other", content)
+        self.assertIn(
+            "- CROSSTRAINER: Crosstrainer (35 min, 260 kcal, HR 120-150, TSS(hr) 22.0)",
+            content,
+        )
+        self.assertNotIn("unknown distance", content)
+
+    def test_persisted_activity_55_uses_crosstrainer_label(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 26),
+            [
+                {
+                    "source": "suunto",
+                    "source_id": "activity_55",
+                    "start_time": "2026-06-26T17:04:36+09:00",
+                    "duration_min": "47.14",
+                    "activity_type": "activity 55",
+                    "raw_type": "activity_55",
+                    "name": "Activity 55",
+                    "energy_kcal": "380",
+                    "avg_hr": "126",
+                    "max_hr": "140",
+                    "tss_score": "32.95363",
+                    "tss_method": "HR",
+                }
+            ],
+        )
+
+        self.assertIn(
+            "- CROSSTRAINER: Crosstrainer (47 min, 380 kcal, HR 126-140, TSS(hr) 33.0)",
+            content,
+        )
+        self.assertNotIn("Activity 55", content)
+        self.assertNotIn("unknown distance", content)
 
     def test_report_prefers_suunto_when_withings_elapsed_duration_is_longer(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

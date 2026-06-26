@@ -5,7 +5,7 @@ import math
 import re
 import shutil
 import textwrap
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -435,11 +435,13 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
     all_sleep_records = read_withings_sleep(config.withings.sleep_csv)
     sleep_records = sleep_records_for_date(all_sleep_records, target_date)
     normalized_activities = _prefer_suunto_activities(
-        [
-            *_normalize_withings_activities(withings_activities, config.timezone),
-            *_normalize_hevy_activities(hevy_activities, config.timezone),
-            *_normalize_suunto_activities(suunto_activities, config.timezone),
-        ]
+        _pair_hevy_suunto_strength(
+            [
+                *_normalize_withings_activities(withings_activities, config.timezone),
+                *_normalize_hevy_activities(hevy_activities, config.timezone),
+                *_normalize_suunto_activities(suunto_activities, config.timezone),
+            ]
+        )
     )
     return DailyState(
         target_date=target_date,
@@ -596,13 +598,17 @@ def render_daily_context(
     state = DailyState(
         target_date=target_date,
         activities=_prefer_suunto_activities(
-            _normalize_activities(activities, local_timezone)
+            _pair_hevy_suunto_strength(
+                _normalize_activities(activities, local_timezone)
+            )
         ),
         measures=measures,
         withings_activity_summaries=withings_activity_summaries,
         historical_withings_activity_summaries=historical_withings_activity_summaries,
         historical_activities=_prefer_suunto_activities(
-            _normalize_activities(historical_activities, local_timezone)
+            _pair_hevy_suunto_strength(
+                _normalize_activities(historical_activities, local_timezone)
+            )
         ),
         historical_measures=historical_measures,
         hevy_sets=hevy_sets or [],
@@ -1218,19 +1224,38 @@ def _render_terminal_activity_sections(
         _render_subsection_title(console, "Workout", theme)
         for activity in workout_activities:
             console.print(_terminal_workout_header(activity, theme))
+            hevy_workout_id = _hevy_workout_id(activity)
             workout_sets = [
                 set_row
                 for set_row in hevy_sets
-                if set_row.get("workout_source_id") == activity.source_id
+                if set_row.get("workout_source_id") == hevy_workout_id
             ]
-            if workout_sets:
-                total_volume_kg = sum(_float_value(set_row.get("volume_kg", "")) for set_row in workout_sets)
-                _render_kv_block(
+            if activity.detail_source == "hevy":
+                total_volume_kg = sum(
+                    _float_value(set_row.get("volume_kg", ""))
+                    for set_row in workout_sets
+                )
+                hevy_detail = _display_activity_name(activity)
+                if workout_sets:
+                    hevy_detail += (
+                        f" / {len(workout_sets)} sets / "
+                        f"{_format_terminal_volume(total_volume_kg)} volume"
+                    )
+                _render_lines(
                     console,
-                    [("Sets", str(len(workout_sets))), ("Volume", _format_terminal_volume(total_volume_kg))],
+                    [f"Hevy {hevy_detail}"],
                     indent=4,
                     theme=theme,
                 )
+            if workout_sets:
+                total_volume_kg = sum(_float_value(set_row.get("volume_kg", "")) for set_row in workout_sets)
+                if activity.detail_source != "hevy":
+                    _render_kv_block(
+                        console,
+                        [("Sets", str(len(workout_sets))), ("Volume", _format_terminal_volume(total_volume_kg))],
+                        indent=4,
+                        theme=theme,
+                    )
                 _render_lines(
                     console,
                     _terminal_exercise_summaries(workout_sets),
@@ -1276,8 +1301,9 @@ def _terminal_distance_activity(
     text = Text(activity.raw_type or "Unknown", style=theme.style("subsection"))
     text.append("  ")
     text.append(_terminal_activity_source(activity), style=theme.style("muted"))
-    text.append(" / ")
-    text.append(_format_distance(activity.distance_km), style=theme.style("primary_value"))
+    if activity.distance_km is not None:
+        text.append(" / ")
+        text.append(_format_distance(activity.distance_km), style=theme.style("primary_value"))
     text.append(" / ")
     text.append(
         f"{activity.duration_min:.0f} min",
@@ -1312,7 +1338,12 @@ def _terminal_workout_header(
     from rich.text import Text
 
     text = Text("    ")
-    text.append(_display_activity_name(activity), style=theme.style("subsection"))
+    if activity.detail_source == "hevy":
+        text.append(activity.raw_type or "STRENGTH", style=theme.style("subsection"))
+        text.append("  ")
+        text.append(_terminal_activity_source(activity), style=theme.style("muted"))
+    else:
+        text.append(_display_activity_name(activity), style=theme.style("subsection"))
     text.append(" / ")
     text.append(
         f"{activity.duration_min:.0f} min",
@@ -1755,7 +1786,11 @@ def _sets_for_strength_activities(
     strength_activities: list[NormalizedActivity],
     hevy_sets: list[dict[str, str]],
 ) -> list[dict[str, str]]:
-    workout_ids = {activity.source_id for activity in strength_activities}
+    workout_ids = {
+        workout_id
+        for activity in strength_activities
+        if (workout_id := _hevy_workout_id(activity))
+    }
     return [
         set_row
         for set_row in hevy_sets
@@ -2561,8 +2596,17 @@ def _format_distance(value: float | None) -> str:
     return f"{value:.2f} km"
 
 
+def _distance_activity_parts(activity: NormalizedActivity) -> list[str]:
+    parts: list[str] = []
+    if activity.distance_km is not None:
+        parts.append(_format_distance(activity.distance_km))
+    parts.append(f"{activity.duration_min:.0f} min")
+    parts.extend(_activity_metric_parts(activity))
+    return parts
+
+
 def _display_activity_name(activity: NormalizedActivity) -> str:
-    name = activity.name or f"{activity.source}:{activity.source_id}"
+    name = activity.detail_name or activity.name or f"{activity.source}:{activity.source_id}"
     translations = {
         "屋外で歩行": "Outdoor Walking",
         "屋内で歩行": "Indoor Walking",
@@ -2613,8 +2657,7 @@ def _render_activity_sections(activities: list[NormalizedActivity], hevy_sets: l
 def _render_distance_activities(activities: list[NormalizedActivity]) -> list[str]:
     lines: list[str] = []
     for activity in activities:
-        parts = [_format_distance(activity.distance_km), f"{activity.duration_min:.0f} min"]
-        parts.extend(_activity_metric_parts(activity))
+        parts = _distance_activity_parts(activity)
         lines.append(
             f"- {activity.raw_type or 'Unknown'}: "
             f"{_display_activity_name(activity)} ({', '.join(parts)})"
@@ -2636,14 +2679,32 @@ def _render_duration_activities(activities: list[NormalizedActivity]) -> list[st
 def _render_workout_activities(activities: list[NormalizedActivity], hevy_sets: list[dict[str, str]]) -> list[str]:
     lines: list[str] = []
     for activity in activities:
+        hevy_workout_id = _hevy_workout_id(activity)
         workout_sets = [
             set_row
             for set_row in hevy_sets
-            if set_row.get("workout_source_id") == activity.source_id
+            if set_row.get("workout_source_id") == hevy_workout_id
         ]
         total_sets = len(workout_sets)
         total_volume_kg = sum(_float_value(set_row.get("volume_kg", "")) for set_row in workout_sets)
         parts = [f"{activity.duration_min:.0f} min", *_activity_metric_parts(activity)]
+        if activity.detail_source == "hevy":
+            lines.append(
+                f"- {activity.raw_type or 'STRENGTH'} "
+                f"{activity.source}:{activity.source_id} / {' / '.join(parts)}"
+            )
+            hevy_parts = [f"Hevy {_display_activity_name(activity)}"]
+            if workout_sets:
+                hevy_parts.extend(
+                    [
+                        f"{total_sets} sets",
+                        f"{_format_volume(total_volume_kg)} volume",
+                    ]
+                )
+            lines.append(f"  - {' / '.join(hevy_parts)}")
+            for summary in _exercise_summaries(workout_sets):
+                lines.append(f"    - {summary}")
+            continue
         lines.append(f"- {_display_activity_name(activity)}: {' / '.join(parts)}")
         if workout_sets:
             lines.append(f"  - Sets: {total_sets}")
@@ -2723,6 +2784,115 @@ def _normalize_suunto_activities(
     return [normalize_suunto_activity(activity, local_timezone) for activity in activities]
 
 
+def _pair_hevy_suunto_strength(
+    activities: list[NormalizedActivity],
+) -> list[NormalizedActivity]:
+    hevy_activities = [
+        activity
+        for activity in activities
+        if activity.source == "hevy" and activity.activity_type == "strength"
+    ]
+    suunto_activities = [
+        activity
+        for activity in activities
+        if activity.source == "suunto" and _is_suunto_strength_activity(activity)
+    ]
+    hevy_candidates = {
+        activity: [
+            suunto
+            for suunto in suunto_activities
+            if _strength_activities_match(activity, suunto)
+        ]
+        for activity in hevy_activities
+    }
+    suunto_candidates = {
+        activity: [
+            hevy
+            for hevy in hevy_activities
+            if _strength_activities_match(hevy, activity)
+        ]
+        for activity in suunto_activities
+    }
+    paired_hevy: set[NormalizedActivity] = set()
+    enriched_by_suunto: dict[NormalizedActivity, NormalizedActivity] = {}
+    for hevy, candidates in hevy_candidates.items():
+        if len(candidates) != 1:
+            continue
+        suunto = candidates[0]
+        if len(suunto_candidates[suunto]) != 1:
+            continue
+        paired_hevy.add(hevy)
+        enriched_by_suunto[suunto] = replace(
+            suunto,
+            activity_type="strength",
+            detail_source="hevy",
+            detail_source_id=hevy.source_id,
+            detail_name=hevy.name,
+        )
+
+    return [
+        enriched_by_suunto.get(activity, activity)
+        for activity in activities
+        if activity not in paired_hevy
+    ]
+
+
+def _is_suunto_strength_activity(activity: NormalizedActivity) -> bool:
+    if activity.activity_type == "strength":
+        return True
+    labels = {
+        activity.activity_type.strip().lower(),
+        activity.raw_type.strip().lower().replace("_", " "),
+        activity.name.strip().lower().replace("_", " "),
+    }
+    return bool(
+        labels
+        & {
+            "strength",
+            "strength training",
+            "weight training",
+            "weights",
+            "gym",
+            "outdoor gym",
+            "crossfit",
+            "kettlebell",
+            "calisthenics",
+            "indoor",
+            "indoor training",
+        }
+    )
+
+
+def _strength_activities_match(
+    hevy: NormalizedActivity,
+    suunto: NormalizedActivity,
+) -> bool:
+    if _activity_date(hevy.start_time) != _activity_date(suunto.start_time):
+        return False
+    hevy_start = _activity_timestamp(hevy.start_time)
+    suunto_start = _activity_timestamp(suunto.start_time)
+    if hevy_start is None or suunto_start is None:
+        return False
+    hevy_end = _activity_end_timestamp(hevy, hevy_start)
+    suunto_end = _activity_end_timestamp(suunto, suunto_start)
+    windows_overlap = (
+        hevy_end is not None
+        and suunto_end is not None
+        and hevy_start <= suunto_end
+        and suunto_start <= hevy_end
+    )
+    windows_near = (
+        hevy_end is not None
+        and suunto_end is not None
+        and (
+            abs(hevy_start - suunto_end) <= 20 * 60
+            or abs(suunto_start - hevy_end) <= 20 * 60
+        )
+    )
+    starts_close = abs(hevy_start - suunto_start) <= 30 * 60
+    return windows_overlap or windows_near or starts_close
+
+
 def _prefer_suunto_activities(
     activities: list[NormalizedActivity],
 ) -> list[NormalizedActivity]:
@@ -2794,8 +2964,23 @@ def _activity_end_timestamp(
 
 
 def _activity_sources(activities: list[NormalizedActivity]) -> str:
-    sources = sorted({activity.source.capitalize() for activity in activities})
+    sources = sorted(
+        {
+            source.capitalize()
+            for activity in activities
+            for source in [activity.source, activity.detail_source]
+            if source
+        }
+    )
     return ", ".join(sources) if sources else "None"
+
+
+def _hevy_workout_id(activity: NormalizedActivity) -> str:
+    if activity.detail_source == "hevy":
+        return activity.detail_source_id
+    if activity.source != "suunto":
+        return activity.source_id
+    return ""
 
 
 def _float_value(value: str) -> float:
