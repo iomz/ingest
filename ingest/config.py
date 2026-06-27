@@ -50,6 +50,20 @@ class SuuntoConfig:
 
 
 @dataclass(frozen=True)
+class VitalsyncConfig:
+    enabled: bool
+    base_url: str
+    client_id: str
+    refresh_token: str
+    access_token: str
+    expires_at: str
+    source_bundle_id: str
+    sleep_csv: Path
+    raw_dir: Path
+    days: int
+
+
+@dataclass(frozen=True)
 class UIConfig:
     theme: str
     body_weight_goal: str
@@ -66,6 +80,7 @@ class AppConfig:
     withings: WithingsConfig
     hevy: HevyConfig
     suunto: SuuntoConfig
+    vitalsync: VitalsyncConfig
     ui: UIConfig
 
     @property
@@ -93,6 +108,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
     withings = _load_withings_config(data, data_dir)
     hevy = _load_hevy_config(data, data_dir)
     suunto = _load_suunto_config(data, data_dir)
+    vitalsync = _load_vitalsync_config(data, data_dir)
     ui = _load_ui_config(data)
     return AppConfig(
         path=config_path,
@@ -104,6 +120,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         withings=withings,
         hevy=hevy,
         suunto=suunto,
+        vitalsync=vitalsync,
         ui=ui,
     )
 
@@ -122,6 +139,14 @@ def update_withings_tokens(config: AppConfig, token: dict[str, Any]) -> None:
         withings["expires_at"] = int(token["expires_in"]) + int(time.time())
     if "expires_at" in token:
         withings["expires_at"] = token["expires_at"]
+    save_config(config)
+
+
+def update_vitalsync_tokens(config: AppConfig, token: dict[str, Any]) -> None:
+    vitalsync = config.data.setdefault("vitalsync", {})
+    vitalsync["access_token"] = _required_token_value(token, "access_token", "Vitalsync")
+    if "expires_at" in token:
+        vitalsync["expires_at"] = str(token["expires_at"])
     save_config(config)
 
 
@@ -258,6 +283,32 @@ def _load_suunto_config(data: dict[str, Any], data_dir: Path) -> SuuntoConfig:
         ),
         raw_dir=_configured_data_path(data_dir, suunto, "suunto.raw_dir", Path("suunto/raw")),
         days=_positive_int(sync.get("days", 30), "sync.suunto.days"),
+    )
+
+
+def _load_vitalsync_config(data: dict[str, Any], data_dir: Path) -> VitalsyncConfig:
+    vitalsync = data.get("vitalsync", {})
+    sync = data.get("sync", {}).get("vitalsync", {})
+    return VitalsyncConfig(
+        enabled=bool(vitalsync.get("enabled", False)),
+        base_url=str(
+            vitalsync.get("base_url") or "https://api.sazanka.io/vitalsync/v1"
+        ).rstrip("/"),
+        client_id=str(vitalsync.get("client_id", "")).strip(),
+        refresh_token=str(vitalsync.get("refresh_token", "")).strip(),
+        access_token=str(vitalsync.get("access_token", "")).strip(),
+        expires_at=str(vitalsync.get("expires_at", "")).strip(),
+        source_bundle_id=str(
+            vitalsync.get("source_bundle_id", "com.lexwarelabs.goodmorning")
+        ).strip(),
+        sleep_csv=_configured_data_path(
+            data_dir,
+            vitalsync,
+            "vitalsync.sleep_csv",
+            Path("vitalsync/sleep.csv"),
+        ),
+        raw_dir=_configured_data_path(data_dir, vitalsync, "vitalsync.raw_dir", Path("vitalsync/raw")),
+        days=_positive_int(sync.get("days", 30), "sync.vitalsync.days"),
     )
 
 

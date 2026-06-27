@@ -37,10 +37,10 @@ Current sources:
 - Withings
 - Hevy
 - Suunto through the optional external `suuntool` adapter
+- Vitalsync Apple Health sleep records
 
 Likely future sources:
 
-- Apple Health export or API bridge
 - manual measurements
 - workout tracking app / Setlist
 - weather

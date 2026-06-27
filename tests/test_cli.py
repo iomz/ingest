@@ -29,6 +29,7 @@ class CliTest(unittest.TestCase):
         sync_args = parser.parse_args(["sync", "withings"])
         sync_hevy_args = parser.parse_args(["sync", "hevy"])
         sync_suunto_args = parser.parse_args(["sync", "suunto"])
+        sync_vitalsync_args = parser.parse_args(["sync", "vitalsync"])
         sync_all_args = parser.parse_args(["sync", "all"])
         import_args = parser.parse_args(["import", "hevy", "--csv", "hevy.csv"])
         backfill_args = parser.parse_args(["backfill", "withings", "--from", "2026-01-01"])
@@ -54,6 +55,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(sync_hevy_args.source, "sync")
         self.assertEqual(sync_hevy_args.command, "hevy")
         self.assertEqual(sync_suunto_args.command, "suunto")
+        self.assertEqual(sync_vitalsync_args.command, "vitalsync")
         self.assertEqual(sync_all_args.source, "sync")
         self.assertEqual(sync_all_args.command, "all")
         self.assertEqual(import_args.source, "import")
@@ -285,6 +287,7 @@ class CliTest(unittest.TestCase):
                 mock.patch("ingest.cli.withings.sync", return_value=[withings_path]) as withings_sync,
                 mock.patch("ingest.cli.hevy.sync", return_value=[hevy_path]) as hevy_sync,
                 mock.patch("ingest.cli.suunto.sync_async", new=mock.AsyncMock()) as suunto_sync,
+                mock.patch("ingest.cli.vitalsync.sync") as vitalsync_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "all"])
@@ -293,6 +296,7 @@ class CliTest(unittest.TestCase):
             withings_sync.assert_called_once()
             hevy_sync.assert_called_once()
             suunto_sync.assert_not_awaited()
+            vitalsync_sync.assert_not_called()
             self.assertEqual(stdout.getvalue(), f"{withings_path}\n{hevy_path}\n")
 
     def test_sync_all_includes_enabled_suunto(self) -> None:
@@ -323,6 +327,32 @@ class CliTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             suunto_sync.assert_awaited_once()
             self.assertEqual(stdout.getvalue(), f"{withings_path}\n{hevy_path}\n{suunto_path}\n")
+
+    def test_sync_all_includes_enabled_vitalsync(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            withings_path = data_dir / "withings/body_measures.csv"
+            hevy_path = data_dir / "hevy/workouts.csv"
+            vitalsync_path = data_dir / "vitalsync/sleep.csv"
+            config_path.write_text(
+                f'[app]\ndata_dir = "{data_dir}"\n\n[vitalsync]\nenabled = true\n',
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with (
+                mock.patch("ingest.cli.withings.sync", return_value=[withings_path]),
+                mock.patch("ingest.cli.hevy.sync", return_value=[hevy_path]),
+                mock.patch("ingest.cli.vitalsync.sync", return_value=[vitalsync_path]) as vitalsync_sync,
+                contextlib.redirect_stdout(stdout),
+            ):
+                exit_code = main(["--config", str(config_path), "sync", "all"])
+
+            self.assertEqual(exit_code, 0)
+            vitalsync_sync.assert_called_once()
+            self.assertEqual(stdout.getvalue(), f"{withings_path}\n{hevy_path}\n{vitalsync_path}\n")
 
     def test_sync_all_fetches_sources_concurrently(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

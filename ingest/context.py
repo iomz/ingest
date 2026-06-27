@@ -432,7 +432,11 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
         all_withings_activity_summaries,
         target_date,
     )
-    all_sleep_records = read_withings_sleep(config.withings.sleep_csv)
+    all_sleep_records = (
+        read_vitalsync_sleep(config.vitalsync.sleep_csv)
+        if config.vitalsync.enabled
+        else read_withings_sleep(config.withings.sleep_csv)
+    )
     sleep_records = sleep_records_for_date(all_sleep_records, target_date)
     normalized_activities = _prefer_suunto_activities(
         _pair_hevy_suunto_strength(
@@ -478,6 +482,14 @@ def read_withings_activity_summaries(path: Path) -> list[dict[str, str]]:
 
 
 def read_withings_sleep(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
+def read_vitalsync_sleep(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
 
@@ -778,7 +790,7 @@ def _render_daily_state(state: DailyState) -> str:
             f"- Workout source: {_activity_sources(primary_today_activities)}",
             f"- Step source: {'Withings' if withings_steps is not None else 'None'}",
             f"- Body source: {'Withings' if measures else 'None'}",
-            f"- Sleep source: {'Withings' if sleep else 'None'}",
+            f"- Sleep source: {_sleep_source_label(sleep)}",
             f"- Activity count: {len(primary_today_activities)} primary",
             *(
                 [
@@ -1687,7 +1699,7 @@ def _terminal_data_coverage_rows(
         ("Workout source", _activity_sources(activities)),
         ("Step source", "Withings" if withings_steps is not None else "None"),
         ("Body source", "Withings" if measures else "None"),
-        ("Sleep source", "Withings" if sleep else "None"),
+        ("Sleep source", _sleep_source_label(sleep)),
         ("Activity count", f"{len(activities)} primary"),
     ]
     if training_load is not None:
@@ -1745,6 +1757,17 @@ def _sleep_snapshot_status(
     bedtime = _sleep_clock_time(sleep.get("start_time", ""))
     wake_time = _sleep_clock_time(sleep.get("end_time", ""))
     return f"{duration}{separator}{bedtime}–{wake_time}"
+
+
+def _sleep_source_label(sleep: dict[str, str] | None) -> str:
+    if sleep is None:
+        return "None"
+    source = sleep.get("source", "")
+    if source == "vitalsync":
+        return "Vitalsync"
+    if source == "withings":
+        return "Withings"
+    return source.title() if source else "Unknown"
 
 
 def _format_sleep_duration(minutes: float) -> str:
@@ -2491,7 +2514,7 @@ def _ai_handoff(
         sleep_sentence = (
             f" Sleep: {_format_sleep_duration(_float_value(sleep.get('total_sleep_min', '')))}, "
             f"{_sleep_clock_time(sleep.get('start_time', ''))}–"
-            f"{_sleep_clock_time(sleep.get('end_time', ''))}, source Withings."
+            f"{_sleep_clock_time(sleep.get('end_time', ''))}, source {_sleep_source_label(sleep)}."
         )
     return (
         f"{activity_sentence}{_suunto_handoff_sentence(suunto_metrics, training_load_metrics)}"
