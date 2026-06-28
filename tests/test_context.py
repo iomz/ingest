@@ -460,6 +460,48 @@ class ContextTest(unittest.TestCase):
         self.assertNotIn("| BMR | 1852 kcal/day |", content)
         self.assertIn("Current weight is 99.00 kg. Weight trend is Unknown. BMI is 30.56. BMR is 1852 kcal/day.", content)
 
+    def test_renders_vitalsync_blood_pressure_in_body_section(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 25),
+            [],
+            blood_pressure_records=[
+                {
+                    "source": "vitalsync",
+                    "source_id": "bp-1",
+                    "date": "2026-06-25",
+                    "datetime_local": "2026-06-25T07:30:00+09:00",
+                    "systolic_mmHg": "121",
+                    "diastolic_mmHg": "79",
+                }
+            ],
+        )
+
+        self.assertIn("## Body", content)
+        self.assertIn("| Blood pressure | 121/79 mmHg · 07:30 |", content)
+        self.assertIn("- Body source: Vitalsync", content)
+
+    def test_renders_vitalsync_blood_pressure_with_withings_body_measures(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 25),
+            [],
+            measures=[body_measure(date(2026, 6, 25), "weight", 99.00)],
+            historical_measures=[body_measure(date(2026, 6, 25), "weight", 99.00)],
+            blood_pressure_records=[
+                {
+                    "source": "vitalsync",
+                    "source_id": "bp-1",
+                    "date": "2026-06-25",
+                    "datetime_local": "2026-06-25T07:30:00+09:00",
+                    "systolic_mmHg": "121",
+                    "diastolic_mmHg": "79",
+                }
+            ],
+        )
+
+        self.assertIn("| Weight | 99.00 kg / fat Unknown / muscle Unknown |", content)
+        self.assertIn("| Blood pressure | 121/79 mmHg · 07:30 |", content)
+        self.assertIn("- Body source: Withings, Vitalsync", content)
+
     def test_rounds_bmr_to_nearest_integer(self) -> None:
         content = render_daily_context(
             date(2026, 5, 29),
@@ -1200,6 +1242,112 @@ class ContextTest(unittest.TestCase):
             self.assertNotIn("readiness", content.lower())
             self.assertNotIn("recovery score", content.lower())
             self.assertNotIn("sleep-adjusted TSS", content)
+
+    def test_renders_vitalsync_sleep_on_local_wake_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n\n[vitalsync]\nenabled = true\n',
+                encoding="utf-8",
+            )
+            vitalsync_dir = data_dir / "vitalsync"
+            vitalsync_dir.mkdir(parents=True)
+            (vitalsync_dir / "sleep.csv").write_text(
+                "\n".join(
+                    [
+                        "source,source_id,start_time,end_time,timezone,wake_date,total_sleep_min,time_in_bed_min,awake_min,awake_count,sleep_score,sleep_efficiency,light_sleep_min,deep_sleep_min,rem_sleep_min",
+                        "vitalsync,s1,2026-06-24T23:00:00+09:00,2026-06-25T06:30:00+09:00,Asia/Tokyo,2026-06-25,390.00,450.00,30.00,1,,0.87,210.00,90.00,90.00",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            written = generate_daily_context(config, date(2026, 6, 25))
+            content = written.read_text(encoding="utf-8")
+
+            self.assertIn("| Sleep | 6h30m · 23:00–06:30 |", content)
+            self.assertIn("- Sleep source: Vitalsync", content)
+            self.assertIn("Sleep: 6h30m, 23:00–06:30, source Vitalsync.", content)
+
+    def test_uses_only_vitalsync_sleep_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n\n[vitalsync]\nenabled = true\n',
+                encoding="utf-8",
+            )
+            header = (
+                "source,source_id,start_time,end_time,timezone,wake_date,total_sleep_min,"
+                "time_in_bed_min,awake_min,awake_count,sleep_score,sleep_efficiency,"
+                "light_sleep_min,deep_sleep_min,rem_sleep_min"
+            )
+            withings_dir = data_dir / "withings"
+            withings_dir.mkdir(parents=True)
+            (withings_dir / "sleep.csv").write_text(
+                "\n".join(
+                    [
+                        header,
+                        "withings,w1,2026-06-24T22:00:00+09:00,2026-06-25T06:45:00+09:00,Asia/Tokyo,2026-06-25,480.00,525.00,45.00,2,81,0.91,240.00,120.00,120.00",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            vitalsync_dir = data_dir / "vitalsync"
+            vitalsync_dir.mkdir(parents=True)
+            (vitalsync_dir / "sleep.csv").write_text(
+                "\n".join(
+                    [
+                        header,
+                        "vitalsync,v1,2026-06-24T23:00:00+09:00,2026-06-25T06:30:00+09:00,Asia/Tokyo,2026-06-25,390.00,450.00,30.00,1,,0.87,210.00,90.00,90.00",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            written = generate_daily_context(config, date(2026, 6, 25))
+            content = written.read_text(encoding="utf-8")
+
+            self.assertIn("| Sleep | 6h30m · 23:00–06:30 |", content)
+            self.assertIn("- Sleep source: Vitalsync", content)
+            self.assertNotIn("8h00m", content)
+
+    def test_enabled_vitalsync_discards_withings_sleep_when_vitalsync_has_no_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n\n[vitalsync]\nenabled = true\n',
+                encoding="utf-8",
+            )
+            withings_dir = data_dir / "withings"
+            withings_dir.mkdir(parents=True)
+            (withings_dir / "sleep.csv").write_text(
+                "\n".join(
+                    [
+                        "source,source_id,start_time,end_time,timezone,wake_date,total_sleep_min,time_in_bed_min,awake_min,awake_count,sleep_score,sleep_efficiency,light_sleep_min,deep_sleep_min,rem_sleep_min",
+                        "withings,w1,2026-06-24T22:00:00+09:00,2026-06-25T06:45:00+09:00,Asia/Tokyo,2026-06-25,480.00,525.00,45.00,2,81,0.91,240.00,120.00,120.00",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            written = generate_daily_context(config, date(2026, 6, 25))
+            content = written.read_text(encoding="utf-8")
+
+            self.assertNotIn("| Sleep |", content)
+            self.assertIn("- Sleep source: None", content)
 
     def test_missing_sleep_does_not_crash_and_is_only_missing_after_history_starts(self) -> None:
         content_without_history = render_daily_context(date(2026, 6, 25), [])

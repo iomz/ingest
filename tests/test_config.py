@@ -51,6 +51,16 @@ days = 21
             self.assertEqual(config.suunto.workouts_csv, root / "app-data/suunto/workouts.csv")
             self.assertEqual(config.suunto.raw_dir, root / "app-data/suunto/raw")
             self.assertEqual(config.suunto.days, 30)
+            self.assertFalse(config.vitalsync.enabled)
+            self.assertEqual(config.vitalsync.base_url, "https://api.sazanka.io/vitalsync/v1")
+            self.assertEqual(config.vitalsync.sleep_csv, root / "app-data/vitalsync/sleep.csv")
+            self.assertEqual(
+                config.vitalsync.blood_pressure_csv,
+                root / "app-data/vitalsync/blood_pressure.csv",
+            )
+            self.assertEqual(config.vitalsync.raw_dir, root / "app-data/vitalsync/raw")
+            self.assertEqual(config.vitalsync.source_bundle_id, "com.lexwarelabs.goodmorning")
+            self.assertEqual(config.vitalsync.days, 30)
             self.assertEqual(config.ui.theme, "default")
             self.assertEqual(config.ui.body_weight_goal, "maintenance")
 
@@ -136,6 +146,34 @@ days = 14
             self.assertTrue(config.suunto.enabled)
             self.assertEqual(config.suunto.command, str(Path("~/bin/suuntool").expanduser()))
             self.assertEqual(config.suunto.days, 14)
+
+    def test_loads_enabled_vitalsync_config_and_sync_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                """
+[vitalsync]
+enabled = true
+base_url = "https://api.example/vitalsync/v1/"
+client_id = "client_123"
+refresh_token = "refresh"
+source_bundle_id = ""
+
+[sync.vitalsync]
+days = 10
+""".strip(),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertTrue(config.vitalsync.enabled)
+            self.assertEqual(config.vitalsync.base_url, "https://api.example/vitalsync/v1")
+            self.assertEqual(config.vitalsync.client_id, "client_123")
+            self.assertEqual(config.vitalsync.refresh_token, "refresh")
+            self.assertEqual(config.vitalsync.source_bundle_id, "")
+            self.assertEqual(config.vitalsync.days, 10)
 
     def test_loads_flat_sync_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
