@@ -21,8 +21,8 @@ Sources
 ```
 
 Current code fetches Withings body, activity, workout, and sleep-summary data,
-imports Hevy workout exports, fetches Vitalsync Apple Health sleep records,
-writes local records, builds a `DailyState`, and renders AI-readable daily
+imports Hevy workout exports, fetches Vitalsync Apple Health sleep and blood
+pressure records, writes local records, builds a `DailyState`, and renders AI-readable daily
 context. Suunto activities can optionally be fetched through `suuntool`. Future
 OpenAI API calls and Brain vault writes belong after rendered context.
 
@@ -109,7 +109,7 @@ Hevy in the opened browser window, then rerun the command.
 
 Suunto sync uses the user-managed [`suuntool`](https://github.com/tajchert/suuntool) command. Install it and run `suuntool login` separately, then enable `[suunto]` in `ingest.toml`. `suunto.command` accepts an absolute executable path and otherwise defaults to `suuntool` from PATH.
 
-Vitalsync sync fetches Apple Health records from `https://api.sazanka.io/vitalsync/v1` by default. Enable `[vitalsync]` and configure an access token, or a refresh token with `client_id`. The first supported record type is `sleep_analysis`, filtered to Sleep Cycle (`com.lexwarelabs.goodmorning`) unless `vitalsync.source_bundle_id` is set to an empty string.
+Vitalsync sync fetches Apple Health records from the configured `vitalsync.base_url`. Enable `[vitalsync]` and configure an access token, or a refresh token with `client_id`. Supported record types are `sleep_analysis` and `blood_pressure`; sleep is filtered to Sleep Cycle (`com.lexwarelabs.goodmorning`) unless `vitalsync.source_bundle_id` is set to an empty string.
 
 Withings OAuth helpers:
 

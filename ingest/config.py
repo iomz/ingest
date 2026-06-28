@@ -59,6 +59,7 @@ class VitalsyncConfig:
     expires_at: str
     source_bundle_id: str
     sleep_csv: Path
+    blood_pressure_csv: Path
     raw_dir: Path
     days: int
 
@@ -306,6 +307,12 @@ def _load_vitalsync_config(data: dict[str, Any], data_dir: Path) -> VitalsyncCon
             vitalsync,
             "vitalsync.sleep_csv",
             Path("vitalsync/sleep.csv"),
+        ),
+        blood_pressure_csv=_configured_data_path(
+            data_dir,
+            vitalsync,
+            "vitalsync.blood_pressure_csv",
+            Path("vitalsync/blood_pressure.csv"),
         ),
         raw_dir=_configured_data_path(data_dir, vitalsync, "vitalsync.raw_dir", Path("vitalsync/raw")),
         days=_positive_int(sync.get("days", 30), "sync.vitalsync.days"),

@@ -37,7 +37,7 @@ Current sources:
 - Withings
 - Hevy
 - Suunto through the optional external `suuntool` adapter
-- Vitalsync Apple Health sleep records
+- Vitalsync Apple Health sleep and blood pressure records
 
 Likely future sources:
 

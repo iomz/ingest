@@ -14,6 +14,17 @@ from ingest.sources.withings import SLEEP_FIELDS, merge_sleep_rows
 
 TIMEOUT_SECONDS = 30
 SLEEP_ANALYSIS = "sleep_analysis"
+BLOOD_PRESSURE = "blood_pressure"
+BP_FIELDS = [
+    "source",
+    "source_id",
+    "date",
+    "datetime_local",
+    "systolic_mmHg",
+    "diastolic_mmHg",
+    "source_name",
+    "source_bundle_id",
+]
 SLEEP_CATEGORIES = {
     "asleep_core": "core_min",
     "asleep_unspecified": "core_min",
@@ -41,7 +52,7 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
     requests = _requests()
     with requests.Session() as session:
         access_token = get_access_token(session, config)
-        records = fetch_records(
+        sleep_records = fetch_records(
             session,
             config.vitalsync,
             access_token,
@@ -50,21 +61,52 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
             end_date=end_date,
             local_timezone=config.timezone,
         )
-    raw_path = write_json_file(config.vitalsync.raw_dir / raw_name, {"records": records})
+        blood_pressure_records = fetch_records(
+            session,
+            config.vitalsync,
+            access_token,
+            sample_type=BLOOD_PRESSURE,
+            start_date=start_date,
+            end_date=end_date,
+            local_timezone=config.timezone,
+        )
+
+    written_paths: list[Path] = []
+    raw_path = write_json_file(config.vitalsync.raw_dir / raw_name, {"records": sleep_records})
+    written_paths.append(raw_path)
     rows = normalize_sleep_analysis_records(
-        records,
+        sleep_records,
         local_timezone=config.timezone,
         source_bundle_id=config.vitalsync.source_bundle_id,
     )
-    if not rows:
-        return [raw_path]
-    existing_rows = read_sleep_rows(config.vitalsync.sleep_csv)
-    sleep_path = write_csv_file(
-        config.vitalsync.sleep_csv,
-        merge_sleep_rows(existing_rows, rows),
-        SLEEP_FIELDS,
+    if rows:
+        existing_rows = read_sleep_rows(config.vitalsync.sleep_csv)
+        sleep_path = write_csv_file(
+            config.vitalsync.sleep_csv,
+            merge_sleep_rows(existing_rows, rows),
+            SLEEP_FIELDS,
+        )
+        written_paths.append(sleep_path)
+
+    blood_pressure_raw_name = raw_name.replace("sleep_analysis", "blood_pressure")
+    blood_pressure_raw_path = write_json_file(
+        config.vitalsync.raw_dir / blood_pressure_raw_name,
+        {"records": blood_pressure_records},
     )
-    return [raw_path, sleep_path]
+    written_paths.append(blood_pressure_raw_path)
+    blood_pressure_rows = normalize_blood_pressure_records(
+        blood_pressure_records,
+        local_timezone=config.timezone,
+    )
+    if blood_pressure_rows:
+        existing_blood_pressure_rows = read_blood_pressure_rows(config.vitalsync.blood_pressure_csv)
+        blood_pressure_path = write_csv_file(
+            config.vitalsync.blood_pressure_csv,
+            merge_blood_pressure_rows(existing_blood_pressure_rows, blood_pressure_rows),
+            BP_FIELDS,
+        )
+        written_paths.append(blood_pressure_path)
+    return written_paths
 
 
 def get_access_token(session: Any, config: AppConfig) -> str:
@@ -217,6 +259,41 @@ def normalize_sleep_analysis_records(
     return sorted(rows, key=lambda row: (str(row["wake_date"]), str(row["end_time"])))
 
 
+def normalize_blood_pressure_records(
+    records: list[dict[str, Any]],
+    *,
+    local_timezone: ZoneInfo,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if record.get("sample_type") != BLOOD_PRESSURE:
+            continue
+        start_time = _parse_timestamp(record.get("start_time"))
+        if start_time is None:
+            continue
+        value = record.get("value")
+        if not isinstance(value, dict):
+            continue
+        systolic = _optional_pressure(value.get("systolic"))
+        diastolic = _optional_pressure(value.get("diastolic"))
+        if not systolic or not diastolic:
+            continue
+        local_time = start_time.astimezone(local_timezone)
+        rows.append(
+            {
+                "source": "vitalsync",
+                "source_id": str(record.get("source_id") or ""),
+                "date": local_time.date().isoformat(),
+                "datetime_local": local_time.isoformat(),
+                "systolic_mmHg": systolic,
+                "diastolic_mmHg": diastolic,
+                "source_name": str(record.get("source_name") or ""),
+                "source_bundle_id": str(record.get("source_bundle_id") or ""),
+            }
+        )
+    return sorted(rows, key=lambda row: (str(row["datetime_local"]), str(row["source_id"])))
+
+
 def read_sleep_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -224,11 +301,37 @@ def read_sleep_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(csv_file))
 
 
+def read_blood_pressure_rows(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
+def merge_blood_pressure_rows(
+    existing_rows: list[dict[str, Any]],
+    new_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in [*existing_rows, *new_rows]:
+        rows_by_key[(str(row.get("source", "")), str(row.get("source_id", "")))] = row
+    return sorted(
+        rows_by_key.values(),
+        key=lambda row: (
+            str(row.get("datetime_local", "")),
+            str(row.get("source", "")),
+            str(row.get("source_id", "")),
+        ),
+    )
+
+
 def _sync_start_date(config: AppConfig, end_date: date) -> date:
-    latest = latest_sleep_date(read_sleep_rows(config.vitalsync.sleep_csv))
-    if latest is None:
-        return end_date - timedelta(days=config.vitalsync.days - 1)
-    return latest
+    fallback = end_date - timedelta(days=config.vitalsync.days - 1)
+    latest_dates = [
+        latest_sleep_date(read_sleep_rows(config.vitalsync.sleep_csv)),
+        latest_blood_pressure_date(read_blood_pressure_rows(config.vitalsync.blood_pressure_csv)),
+    ]
+    return min(value or fallback for value in latest_dates)
 
 
 def latest_sleep_date(rows: Iterable[dict[str, str]]) -> date | None:
@@ -236,6 +339,16 @@ def latest_sleep_date(rows: Iterable[dict[str, str]]) -> date | None:
     for row in rows:
         try:
             dates.append(date.fromisoformat(row.get("wake_date", "")))
+        except ValueError:
+            pass
+    return max(dates) if dates else None
+
+
+def latest_blood_pressure_date(rows: Iterable[dict[str, str]]) -> date | None:
+    dates: list[date] = []
+    for row in rows:
+        try:
+            dates.append(date.fromisoformat(row.get("date", "")))
         except ValueError:
             pass
     return max(dates) if dates else None
@@ -281,6 +394,14 @@ def _minutes(value: float) -> str:
 
 def _ratio(numerator: float, denominator: float) -> str:
     return f"{numerator / denominator:.2f}" if denominator > 0 else ""
+
+
+def _optional_pressure(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    return str(round(number))
 
 
 def _token_expired(value: str) -> bool:

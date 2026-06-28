@@ -54,6 +54,10 @@ days = 21
             self.assertFalse(config.vitalsync.enabled)
             self.assertEqual(config.vitalsync.base_url, "https://api.sazanka.io/vitalsync/v1")
             self.assertEqual(config.vitalsync.sleep_csv, root / "app-data/vitalsync/sleep.csv")
+            self.assertEqual(
+                config.vitalsync.blood_pressure_csv,
+                root / "app-data/vitalsync/blood_pressure.csv",
+            )
             self.assertEqual(config.vitalsync.raw_dir, root / "app-data/vitalsync/raw")
             self.assertEqual(config.vitalsync.source_bundle_id, "com.lexwarelabs.goodmorning")
             self.assertEqual(config.vitalsync.days, 30)

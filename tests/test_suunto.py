@@ -58,6 +58,58 @@ class SuuntoSourceTest(unittest.TestCase):
         self.assertIn("- Activity count: 1 primary", content)
         self.assertNotIn("Imported Walk", content)
 
+    def test_build_daily_state_discards_withings_workouts_when_suunto_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                f"""
+[app]
+data_dir = "{data_dir}"
+timezone = "Asia/Tokyo"
+
+[suunto]
+enabled = true
+""".strip(),
+                encoding="utf-8",
+            )
+            withings_path = data_dir / "withings/workouts.csv"
+            withings_path.parent.mkdir(parents=True)
+            withings_path.write_text(
+                "\n".join(
+                    [
+                        "source,source_id,start_time,end_time,duration_min,distance_km,step_count,activity_type,raw_type,name",
+                        "withings,elliptical-copy,2026-06-26T22:20:00+09:00,2026-06-26T23:07:00+09:00,47.00,,0,category_18,category_18,Elliptical",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            suunto_path = data_dir / "suunto/workouts.csv"
+            suunto_path.parent.mkdir(parents=True)
+            suunto_path.write_text(
+                "\n".join(
+                    [
+                        ",".join(suunto.WORKOUT_FIELDS),
+                        "suunto,crosstrainer,2026-06-26T22:20:00+09:00,2026-06-26T23:07:00+09:00,47.00,,0,crosstrainer,CROSSTRAINER,Crosstrainer,,380,126,140,33,hr,,",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            state = build_daily_state(config, date(2026, 6, 26))
+            content = generate_daily_context(config, date(2026, 6, 26)).read_text(encoding="utf-8")
+
+            self.assertEqual([activity.source for activity in state.activities], ["suunto"])
+            self.assertIn("- Workout source: Suunto", content)
+            self.assertIn("- Activity count: 1 primary", content)
+            self.assertIn("Crosstrainer", content)
+            self.assertNotIn("elliptical-copy", content)
+            self.assertNotIn("category_18", content)
+
     def test_sync_invokes_configured_command_and_merges_workout_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

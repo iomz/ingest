@@ -460,6 +460,48 @@ class ContextTest(unittest.TestCase):
         self.assertNotIn("| BMR | 1852 kcal/day |", content)
         self.assertIn("Current weight is 99.00 kg. Weight trend is Unknown. BMI is 30.56. BMR is 1852 kcal/day.", content)
 
+    def test_renders_vitalsync_blood_pressure_in_body_section(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 25),
+            [],
+            blood_pressure_records=[
+                {
+                    "source": "vitalsync",
+                    "source_id": "bp-1",
+                    "date": "2026-06-25",
+                    "datetime_local": "2026-06-25T07:30:00+09:00",
+                    "systolic_mmHg": "121",
+                    "diastolic_mmHg": "79",
+                }
+            ],
+        )
+
+        self.assertIn("## Body", content)
+        self.assertIn("| Blood pressure | 121/79 mmHg · 07:30 |", content)
+        self.assertIn("- Body source: Vitalsync", content)
+
+    def test_renders_vitalsync_blood_pressure_with_withings_body_measures(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 25),
+            [],
+            measures=[body_measure(date(2026, 6, 25), "weight", 99.00)],
+            historical_measures=[body_measure(date(2026, 6, 25), "weight", 99.00)],
+            blood_pressure_records=[
+                {
+                    "source": "vitalsync",
+                    "source_id": "bp-1",
+                    "date": "2026-06-25",
+                    "datetime_local": "2026-06-25T07:30:00+09:00",
+                    "systolic_mmHg": "121",
+                    "diastolic_mmHg": "79",
+                }
+            ],
+        )
+
+        self.assertIn("| Weight | 99.00 kg / fat Unknown / muscle Unknown |", content)
+        self.assertIn("| Blood pressure | 121/79 mmHg · 07:30 |", content)
+        self.assertIn("- Body source: Withings, Vitalsync", content)
+
     def test_rounds_bmr_to_nearest_integer(self) -> None:
         content = render_daily_context(
             date(2026, 5, 29),

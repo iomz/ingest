@@ -59,6 +59,7 @@ expires_at = ""
 # Defaults to Sleep Cycle. Set to "" to include all sleep_analysis sources.
 source_bundle_id = "com.lexwarelabs.goodmorning"
 sleep_csv = "vitalsync/sleep.csv"
+blood_pressure_csv = "vitalsync/blood_pressure.csv"
 raw_dir = "vitalsync/raw"
 
 [sync.vitalsync]
