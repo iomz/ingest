@@ -47,3 +47,21 @@ raw_dir = "suunto/raw"
 [sync.suunto]
 # Number of days to fetch when no local Suunto data exists.
 days = 30
+
+[vitalsync]
+# Optional. Apple Health records synced by the Vitalsync iOS app.
+enabled = false
+base_url = "https://receiver.example.com/vitalsync/v1"
+client_id = ""
+refresh_token = ""
+access_token = ""
+expires_at = ""
+# Defaults to Sleep Cycle. Set to "" to include all sleep_analysis sources.
+source_bundle_id = "com.lexwarelabs.goodmorning"
+sleep_csv = "vitalsync/sleep.csv"
+blood_pressure_csv = "vitalsync/blood_pressure.csv"
+raw_dir = "vitalsync/raw"
+
+[sync.vitalsync]
+# Number of days to fetch when no local Vitalsync sleep data exists.
+days = 30

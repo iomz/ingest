@@ -35,6 +35,7 @@ class DailyState:
     hevy_sets: list[dict[str, str]]
     sleep_records: list[dict[str, str]] = field(default_factory=list)
     historical_sleep_records: list[dict[str, str]] = field(default_factory=list)
+    blood_pressure_records: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -360,7 +361,12 @@ def render_daily_terminal_context(
         )
     console.print(body_trends)
 
-    body_rows = _terminal_body_kv_rows(state.measures, state.historical_measures, target_date)
+    body_rows = _terminal_body_kv_rows(
+        state.measures,
+        state.historical_measures,
+        target_date,
+        state.blood_pressure_records,
+    )
     if body_rows:
         _render_section_title(console, "Body", theme)
         _render_kv_block(console, body_rows, indent=2, theme=theme)
@@ -376,6 +382,7 @@ def render_daily_terminal_context(
             activities,
             withings_steps,
             state.measures,
+            state.blood_pressure_records,
             training_load_metrics,
             sleep,
             _sleep_expected(state.historical_sleep_records, target_date),
@@ -417,7 +424,7 @@ def render_daily_terminal_context(
 
 
 def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
-    withings_activities = read_withings_activities(config.withings.workouts_csv)
+    withings_activities = [] if config.suunto.enabled else read_withings_activities(config.withings.workouts_csv)
     hevy_activities = read_hevy_activities(config.hevy.workouts_csv)
     suunto_activities = read_suunto_activities(config.suunto.workouts_csv)
     hevy_sets = sets_for_date(
@@ -432,8 +439,21 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
         all_withings_activity_summaries,
         target_date,
     )
-    all_sleep_records = read_withings_sleep(config.withings.sleep_csv)
+    all_sleep_records = (
+        read_vitalsync_sleep(config.vitalsync.sleep_csv)
+        if config.vitalsync.enabled
+        else read_withings_sleep(config.withings.sleep_csv)
+    )
     sleep_records = sleep_records_for_date(all_sleep_records, target_date)
+    all_blood_pressure_records = (
+        read_vitalsync_blood_pressure(config.vitalsync.blood_pressure_csv)
+        if config.vitalsync.enabled
+        else []
+    )
+    blood_pressure_records = blood_pressure_records_for_date(
+        all_blood_pressure_records,
+        target_date,
+    )
     normalized_activities = _prefer_suunto_activities(
         _pair_hevy_suunto_strength(
             [
@@ -458,6 +478,7 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
         hevy_sets=hevy_sets,
         sleep_records=sleep_records,
         historical_sleep_records=all_sleep_records,
+        blood_pressure_records=blood_pressure_records,
     )
 
 
@@ -478,6 +499,22 @@ def read_withings_activity_summaries(path: Path) -> list[dict[str, str]]:
 
 
 def read_withings_sleep(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
+def read_vitalsync_sleep(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
+def read_vitalsync_blood_pressure(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
 
@@ -567,6 +604,14 @@ def sleep_records_for_date(
     return [sleep for sleep in sleep_records if sleep.get("wake_date") == target]
 
 
+def blood_pressure_records_for_date(
+    blood_pressure_records: list[dict[str, str]],
+    target_date: date,
+) -> list[dict[str, str]]:
+    target = target_date.isoformat()
+    return [record for record in blood_pressure_records if record.get("date") == target]
+
+
 def render_daily_context(
     target_date: date,
     activities: list[dict[str, str]],
@@ -579,6 +624,7 @@ def render_daily_context(
     local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
     sleep_records: list[dict[str, str]] | None = None,
     historical_sleep_records: list[dict[str, str]] | None = None,
+    blood_pressure_records: list[dict[str, str]] | None = None,
 ) -> str:
     measures = measures or []
     historical_measures = historical_measures if historical_measures is not None else measures
@@ -590,6 +636,7 @@ def render_daily_context(
         else withings_activity_summaries
     )
     sleep_records = sleep_records or []
+    blood_pressure_records = blood_pressure_records or []
     historical_sleep_records = (
         historical_sleep_records
         if historical_sleep_records is not None
@@ -614,6 +661,7 @@ def render_daily_context(
         hevy_sets=hevy_sets or [],
         sleep_records=sleep_records,
         historical_sleep_records=historical_sleep_records,
+        blood_pressure_records=blood_pressure_records,
     )
     return _render_daily_state(state)
 
@@ -679,7 +727,12 @@ def _render_daily_state(state: DailyState) -> str:
         for activity in primary_today_activities
         if activity.activity_type == "ride"
     )
-    body_rows = _body_rows(measures, state.historical_measures, target_date)
+    body_rows = _body_rows(
+        measures,
+        state.historical_measures,
+        target_date,
+        state.blood_pressure_records,
+    )
     suunto_metrics = _suunto_daily_metrics(primary_today_activities)
     training_load_metrics = _training_load_metrics(
         historical_normalized_activities,
@@ -777,8 +830,8 @@ def _render_daily_state(state: DailyState) -> str:
             "",
             f"- Workout source: {_activity_sources(primary_today_activities)}",
             f"- Step source: {'Withings' if withings_steps is not None else 'None'}",
-            f"- Body source: {'Withings' if measures else 'None'}",
-            f"- Sleep source: {'Withings' if sleep else 'None'}",
+            f"- Body source: {_body_source_label(measures, state.blood_pressure_records)}",
+            f"- Sleep source: {_sleep_source_label(sleep)}",
             f"- Activity count: {len(primary_today_activities)} primary",
             *(
                 [
@@ -1494,25 +1547,45 @@ def _body_rows(
     measures: list[dict[str, str]],
     historical_measures: list[dict[str, str]],
     target_date: date,
+    blood_pressure_records: list[dict[str, str]] | None = None,
 ) -> list[str]:
-    return [f"| {label} | {value} |" for label, value in _body_kv_rows(measures, historical_measures, target_date)]
+    return [
+        f"| {label} | {value} |"
+        for label, value in _body_kv_rows(
+            measures,
+            historical_measures,
+            target_date,
+            blood_pressure_records or [],
+        )
+    ]
 
 
 def _terminal_body_kv_rows(
     measures: list[dict[str, str]],
     historical_measures: list[dict[str, str]],
     target_date: date,
+    blood_pressure_records: list[dict[str, str]] | None = None,
 ) -> list[tuple[str, str]]:
-    return [(label, value.replace(" · ", " / ")) for label, value in _body_kv_rows(measures, historical_measures, target_date)]
+    return [
+        (label, value.replace(" · ", " / "))
+        for label, value in _body_kv_rows(
+            measures,
+            historical_measures,
+            target_date,
+            blood_pressure_records or [],
+        )
+    ]
 
 
 def _body_kv_rows(
     measures: list[dict[str, str]],
     historical_measures: list[dict[str, str]],
     target_date: date,
+    blood_pressure_records: list[dict[str, str]],
 ) -> list[tuple[str, str]]:
+    blood_pressure = _latest_blood_pressure(blood_pressure_records)
     if not measures:
-        return []
+        return [("Blood pressure", _blood_pressure_value(blood_pressure))] if blood_pressure else []
 
     latest_by_type = _latest_measures_by_type(measures)
     main_types = {
@@ -1560,7 +1633,29 @@ def _body_kv_rows(
         index_parts.append(f"BMR {bmr}")
     if index_parts:
         rows.append(("Index", " / ".join(index_parts)))
+    if blood_pressure:
+        rows.append(("Blood pressure", _blood_pressure_value(blood_pressure)))
     return rows
+
+
+def _latest_blood_pressure(records: list[dict[str, str]]) -> dict[str, str] | None:
+    if not records:
+        return None
+    return max(records, key=lambda record: record.get("datetime_local", ""))
+
+
+def _blood_pressure_value(record: dict[str, str]) -> str:
+    systolic = record.get("systolic_mmHg", "")
+    diastolic = record.get("diastolic_mmHg", "")
+    measured_at = _blood_pressure_clock_time(record.get("datetime_local", ""))
+    if measured_at:
+        return f"{systolic}/{diastolic} mmHg · {measured_at}"
+    return f"{systolic}/{diastolic} mmHg"
+
+
+def _blood_pressure_clock_time(value: str) -> str:
+    parsed = _parse_timestamp(value)
+    return parsed.strftime("%H:%M") if parsed is not None else ""
 
 
 def _latest_measures_by_type(measures: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -1675,10 +1770,23 @@ def _missing_data_summary(
     return "; ".join(missing)
 
 
+def _body_source_label(
+    measures: list[dict[str, str]],
+    blood_pressure_records: list[dict[str, str]],
+) -> str:
+    sources = []
+    if measures:
+        sources.append("Withings")
+    if blood_pressure_records:
+        sources.append("Vitalsync")
+    return ", ".join(sources) if sources else "None"
+
+
 def _terminal_data_coverage_rows(
     activities: list[NormalizedActivity],
     withings_steps: int | None,
     measures: list[dict[str, str]],
+    blood_pressure_records: list[dict[str, str]],
     training_load: TrainingLoadMetrics | None,
     sleep: dict[str, str] | None,
     sleep_expected: bool,
@@ -1686,8 +1794,8 @@ def _terminal_data_coverage_rows(
     rows = [
         ("Workout source", _activity_sources(activities)),
         ("Step source", "Withings" if withings_steps is not None else "None"),
-        ("Body source", "Withings" if measures else "None"),
-        ("Sleep source", "Withings" if sleep else "None"),
+        ("Body source", _body_source_label(measures, blood_pressure_records)),
+        ("Sleep source", _sleep_source_label(sleep)),
         ("Activity count", f"{len(activities)} primary"),
     ]
     if training_load is not None:
@@ -1745,6 +1853,17 @@ def _sleep_snapshot_status(
     bedtime = _sleep_clock_time(sleep.get("start_time", ""))
     wake_time = _sleep_clock_time(sleep.get("end_time", ""))
     return f"{duration}{separator}{bedtime}–{wake_time}"
+
+
+def _sleep_source_label(sleep: dict[str, str] | None) -> str:
+    if sleep is None:
+        return "None"
+    source = sleep.get("source", "")
+    if source == "vitalsync":
+        return "Vitalsync"
+    if source == "withings":
+        return "Withings"
+    return source.title() if source else "Unknown"
 
 
 def _format_sleep_duration(minutes: float) -> str:
@@ -2491,7 +2610,7 @@ def _ai_handoff(
         sleep_sentence = (
             f" Sleep: {_format_sleep_duration(_float_value(sleep.get('total_sleep_min', '')))}, "
             f"{_sleep_clock_time(sleep.get('start_time', ''))}–"
-            f"{_sleep_clock_time(sleep.get('end_time', ''))}, source Withings."
+            f"{_sleep_clock_time(sleep.get('end_time', ''))}, source {_sleep_source_label(sleep)}."
         )
     return (
         f"{activity_sentence}{_suunto_handoff_sentence(suunto_metrics, training_load_metrics)}"
