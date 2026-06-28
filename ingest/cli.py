@@ -200,14 +200,15 @@ def _sync_all(config: AppConfig) -> list[Path]:
 
 
 async def _sync_all_async(config: AppConfig) -> list[Path]:
+    config_update_lock = anyio.Lock()
     sources: list[tuple[str, Callable[[], Awaitable[list[Path]]]]] = [
-        ("withings", lambda: _run_sync_source(withings.sync, config)),
+        ("withings", lambda: _run_sync_source(withings.sync, config, config_update_lock)),
         ("hevy", lambda: _run_sync_source(hevy.sync, config)),
     ]
     if config.suunto.enabled:
         sources.append(("suunto", lambda: suunto.sync_async(config)))
     if config.vitalsync.enabled:
-        sources.append(("vitalsync", lambda: _run_sync_source(vitalsync.sync, config)))
+        sources.append(("vitalsync", lambda: _run_sync_source(vitalsync.sync, config, config_update_lock)))
     results: dict[str, list[Path]] = {}
     errors: dict[str, Exception | SystemExit] = {}
 
@@ -231,7 +232,11 @@ async def _sync_all_async(config: AppConfig) -> list[Path]:
 async def _run_sync_source(
     sync_source: Callable[[AppConfig], list[Path]],
     config: AppConfig,
+    config_update_lock: anyio.Lock | None = None,
 ) -> list[Path]:
+    if config_update_lock is not None:
+        async with config_update_lock:
+            return await anyio.to_thread.run_sync(sync_source, config)
     return await anyio.to_thread.run_sync(sync_source, config)
 
 

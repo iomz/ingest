@@ -4,6 +4,7 @@ import contextlib
 import io
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -353,6 +354,39 @@ class CliTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             vitalsync_sync.assert_called_once()
             self.assertEqual(stdout.getvalue(), f"{withings_path}\n{hevy_path}\n{vitalsync_path}\n")
+
+    def test_sync_all_serializes_config_mutating_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                f'[app]\ndata_dir = "{root / "app-data"}"\n\n[vitalsync]\nenabled = true\n',
+                encoding="utf-8",
+            )
+            active_sources: set[str] = set()
+            active_lock = threading.Lock()
+            overlaps: list[tuple[str, str]] = []
+
+            def sync_source(name: str) -> list[Path]:
+                with active_lock:
+                    for active_source in active_sources:
+                        if {name, active_source} == {"withings", "vitalsync"}:
+                            overlaps.append((name, active_source))
+                    active_sources.add(name)
+                time.sleep(0.05)
+                with active_lock:
+                    active_sources.remove(name)
+                return []
+
+            with (
+                mock.patch("ingest.cli.withings.sync", side_effect=lambda _config: sync_source("withings")),
+                mock.patch("ingest.cli.hevy.sync", return_value=[]),
+                mock.patch("ingest.cli.vitalsync.sync", side_effect=lambda _config: sync_source("vitalsync")),
+            ):
+                exit_code = main(["--config", str(config_path), "sync", "all"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(overlaps, [])
 
     def test_sync_all_fetches_sources_concurrently(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
