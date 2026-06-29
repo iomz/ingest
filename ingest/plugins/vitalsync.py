@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from ingest.app_data import write_csv_file, write_json_file
 from ingest.config import AppConfig, VitalsyncConfig, update_vitalsync_tokens
-from ingest.sources.withings import SLEEP_FIELDS, merge_sleep_rows
+from ingest.plugins.withings import SLEEP_FIELDS, merge_sleep_rows
 
 TIMEOUT_SECONDS = 30
 SLEEP_ANALYSIS = "sleep_analysis"
@@ -122,11 +122,11 @@ def get_access_token(session: Any, config: AppConfig) -> str:
         return config.vitalsync.access_token
     if not config.vitalsync.refresh_token:
         raise SystemExit(
-            "Missing Vitalsync access token. Set vitalsync.access_token in the config file, "
-            "or set vitalsync.refresh_token and vitalsync.client_id."
+            "Missing Vitalsync access token. Set plugin.vitalsync.access_token in the config file, "
+            "or set plugin.vitalsync.refresh_token and plugin.vitalsync.client_id."
         )
     if not config.vitalsync.client_id:
-        raise SystemExit("Missing Vitalsync client_id for refresh token flow.")
+        raise SystemExit("Missing plugin.vitalsync.client_id for refresh token flow.")
     return refresh_app_access_token(session, config)
 
 
@@ -153,9 +153,9 @@ def register_client(config: AppConfig, *, pairing_token: str, client_label: str 
 
 def refresh_configured_access_token(config: AppConfig) -> dict[str, Any]:
     if not config.vitalsync.refresh_token:
-        raise SystemExit("Missing Vitalsync refresh_token.")
+        raise SystemExit("Missing plugin.vitalsync.refresh_token.")
     if not config.vitalsync.client_id:
-        raise SystemExit("Missing Vitalsync client_id for refresh token flow.")
+        raise SystemExit("Missing plugin.vitalsync.client_id for refresh token flow.")
     requests = _requests()
     with requests.Session() as session:
         token = refresh_access_token(session, config.vitalsync)
@@ -206,7 +206,7 @@ def fetch_records_with_refresh(
         if exc.status_code != 401 or not config.vitalsync.refresh_token:
             raise
     if not config.vitalsync.client_id:
-        raise SystemExit("Missing Vitalsync client_id for refresh token flow.")
+        raise SystemExit("Missing plugin.vitalsync.client_id for refresh token flow.")
     refreshed_access_token = refresh_app_access_token(session, config)
     records = fetch_records(
         session,

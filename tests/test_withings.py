@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from ingest.config import load_config
-from ingest.sources.withings import (
+from ingest.plugins.withings import (
     authorization_url,
     fetch_activity_windowed,
     fetch_body_measures_windowed,
@@ -204,7 +204,7 @@ class WithingsTest(unittest.TestCase):
             config_path = Path(temp_dir) / "ingest.toml"
             config_path.write_text(
                 """
-[withings]
+[plugin.withings]
 client_id = "client-id"
 """.strip(),
                 encoding="utf-8",
@@ -484,7 +484,7 @@ client_id = "client-id"
 [app]
 data_dir = "{data_dir}"
 
-[withings]
+[plugin.withings]
 access_token = "access"
 """.strip(),
                 encoding="utf-8",
@@ -523,7 +523,7 @@ access_token = "access"
 [app]
 data_dir = "{data_dir}"
 
-[withings]
+[plugin.withings]
 access_token = "access"
 """.strip(),
                 encoding="utf-8",
@@ -579,7 +579,7 @@ access_token = "access"
 [app]
 data_dir = "{data_dir}"
 
-[withings]
+[plugin.withings]
 access_token = "access"
 """.strip(),
                 encoding="utf-8",
@@ -721,7 +721,7 @@ access_token = "access"
             )
             config = load_config(config_path)
 
-            with mock.patch("ingest.sources.withings.sync_range", return_value=[]) as sync_range:
+            with mock.patch("ingest.plugins.withings.sync_range", return_value=[]) as sync_range:
                 written = sync(config, end_date=date(2026, 6, 5))
 
             self.assertEqual(written, [])
@@ -735,10 +735,10 @@ access_token = "access"
     def test_sync_uses_configured_recent_days_when_no_local_data_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            config_path = write_config(root, "[sync.withings]\ndays = 4")
+            config_path = write_config(root, "[plugin.withings]\nsync_days = 4")
             config = load_config(config_path)
 
-            with mock.patch("ingest.sources.withings.sync_range", return_value=[]) as sync_range:
+            with mock.patch("ingest.plugins.withings.sync_range", return_value=[]) as sync_range:
                 written = sync(config, end_date=date(2026, 6, 5))
 
             self.assertEqual(written, [])
@@ -757,7 +757,7 @@ access_token = "access"
             write_withings_csvs(data_dir, activity=["2026-06-06,1200,1.00"])
             config = load_config(config_path)
 
-            with mock.patch("ingest.sources.withings.sync_range", return_value=[]) as sync_range:
+            with mock.patch("ingest.plugins.withings.sync_range", return_value=[]) as sync_range:
                 written = sync(config, end_date=date(2026, 6, 5))
 
             self.assertEqual(written, [])
@@ -806,11 +806,11 @@ access_token = "access"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             data_dir = root / "app-data"
-            config_path = write_config(root, extra='[withings]\naccess_token = "access"')
+            config_path = write_config(root, extra='[plugin.withings]\naccess_token = "access"')
             config = load_config(config_path)
             session = HeightSession()
 
-            with mock.patch("ingest.sources.withings._requests", return_value=SessionProvider(session)):
+            with mock.patch("ingest.plugins.withings._requests", return_value=SessionProvider(session)):
                 written = sync_range(
                     config,
                     date(2026, 5, 29),
@@ -829,7 +829,7 @@ access_token = "access"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             data_dir = root / "app-data"
-            config_path = write_config(root, extra='[withings]\naccess_token = "access"')
+            config_path = write_config(root, extra='[plugin.withings]\naccess_token = "access"')
             write_withings_csvs(
                 data_dir,
                 measures=["1,2020-01-01,2020-01-01T00:00:00,4,height,1.80,m"],
@@ -837,7 +837,7 @@ access_token = "access"
             config = load_config(config_path)
             session = HeightSession()
 
-            with mock.patch("ingest.sources.withings._requests", return_value=SessionProvider(session)):
+            with mock.patch("ingest.plugins.withings._requests", return_value=SessionProvider(session)):
                 sync_range(
                     config,
                     date(2026, 5, 29),

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from ingest.config import load_config
-from ingest.sources import hevy
+from ingest.plugins import hevy
 
 
 class HevySourceTest(unittest.TestCase):
@@ -99,7 +99,7 @@ class HevySourceTest(unittest.TestCase):
             )
             config = load_config(config_path)
 
-            with mock.patch("ingest.sources.hevy.export_workouts_csv", return_value=export_path):
+            with mock.patch("ingest.plugins.hevy.export_workouts_csv", return_value=export_path):
                 paths = hevy.sync(config)
 
             self.assertEqual(paths, [data_dir / "hevy/workouts.csv", data_dir / "hevy/sets.csv"])

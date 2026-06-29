@@ -27,10 +27,10 @@ class CliTest(unittest.TestCase):
         day_markdown_args = parser.parse_args(["day", "2026-06-02", "--markdown"])
         yesterday_args = parser.parse_args(["yesterday"])
         yesterday_markdown_args = parser.parse_args(["yesterday", "--markdown"])
-        sync_args = parser.parse_args(["sync", "withings"])
         sync_hevy_args = parser.parse_args(["sync", "hevy"])
         sync_suunto_args = parser.parse_args(["sync", "suunto"])
         sync_vitalsync_args = parser.parse_args(["sync", "vitalsync"])
+        sync_withings_args = parser.parse_args(["sync", "withings"])
         sync_all_args = parser.parse_args(["sync", "all"])
         import_args = parser.parse_args(["import", "hevy", "--csv", "hevy.csv"])
         backfill_args = parser.parse_args(["backfill", "withings", "--from", "2026-01-01"])
@@ -55,12 +55,12 @@ class CliTest(unittest.TestCase):
         self.assertEqual(yesterday_args.source, "yesterday")
         self.assertFalse(yesterday_args.markdown)
         self.assertTrue(yesterday_markdown_args.markdown)
-        self.assertEqual(sync_args.source, "sync")
-        self.assertEqual(sync_args.command, "withings")
         self.assertEqual(sync_hevy_args.source, "sync")
         self.assertEqual(sync_hevy_args.command, "hevy")
         self.assertEqual(sync_suunto_args.command, "suunto")
         self.assertEqual(sync_vitalsync_args.command, "vitalsync")
+        self.assertEqual(sync_withings_args.source, "sync")
+        self.assertEqual(sync_withings_args.command, "withings")
         self.assertEqual(sync_all_args.source, "sync")
         self.assertEqual(sync_all_args.command, "all")
         self.assertEqual(import_args.source, "import")
@@ -95,7 +95,7 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
-            config_path.write_text('[withings]\nclient_id = "client"\n', encoding="utf-8")
+            config_path.write_text('[plugin.withings]\nclient_id = "client"\n', encoding="utf-8")
 
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
@@ -120,7 +120,7 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
-            config_path.write_text("[vitalsync]\nbase_url = \"https://receiver.example/vitalsync/v1\"\n", encoding="utf-8")
+            config_path.write_text("[plugin.vitalsync]\nbase_url = \"https://receiver.example/vitalsync/v1\"\n", encoding="utf-8")
 
             stdout = io.StringIO()
             with (
@@ -152,7 +152,7 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
-            config_path.write_text("[vitalsync]\nclient_id = \"client\"\nrefresh_token = \"refresh\"\n", encoding="utf-8")
+            config_path.write_text("[plugin.vitalsync]\nclient_id = \"client\"\nrefresh_token = \"refresh\"\n", encoding="utf-8")
 
             stdout = io.StringIO()
             with (
@@ -404,7 +404,7 @@ class CliTest(unittest.TestCase):
             hevy_sync.assert_called_once()
             suunto_sync.assert_not_awaited()
             vitalsync_sync.assert_not_called()
-            self.assertEqual(stdout.getvalue(), f"{withings_path}\n{hevy_path}\n")
+            self.assertEqual(stdout.getvalue(), f"{hevy_path}\n{withings_path}\n")
 
     def test_sync_all_includes_enabled_suunto(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -415,7 +415,7 @@ class CliTest(unittest.TestCase):
             hevy_path = data_dir / "hevy/workouts.csv"
             suunto_path = data_dir / "suunto/workouts.csv"
             config_path.write_text(
-                f'[app]\ndata_dir = "{data_dir}"\n\n[suunto]\nenabled = true\n',
+                f'[app]\ndata_dir = "{data_dir}"\n\n[plugin.suunto]\nenabled = true\n',
                 encoding="utf-8",
             )
 
@@ -433,7 +433,7 @@ class CliTest(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             suunto_sync.assert_awaited_once()
-            self.assertEqual(stdout.getvalue(), f"{withings_path}\n{hevy_path}\n{suunto_path}\n")
+            self.assertEqual(stdout.getvalue(), f"{hevy_path}\n{suunto_path}\n{withings_path}\n")
 
     def test_sync_all_includes_enabled_vitalsync(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -444,7 +444,7 @@ class CliTest(unittest.TestCase):
             hevy_path = data_dir / "hevy/workouts.csv"
             vitalsync_path = data_dir / "vitalsync/sleep.csv"
             config_path.write_text(
-                f'[app]\ndata_dir = "{data_dir}"\n\n[vitalsync]\nenabled = true\n',
+                f'[app]\ndata_dir = "{data_dir}"\n\n[plugin.vitalsync]\nenabled = true\n',
                 encoding="utf-8",
             )
 
@@ -459,14 +459,14 @@ class CliTest(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             vitalsync_sync.assert_called_once()
-            self.assertEqual(stdout.getvalue(), f"{withings_path}\n{hevy_path}\n{vitalsync_path}\n")
+            self.assertEqual(stdout.getvalue(), f"{hevy_path}\n{vitalsync_path}\n{withings_path}\n")
 
     def test_sync_all_serializes_config_mutating_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
             config_path.write_text(
-                f'[app]\ndata_dir = "{root / "app-data"}"\n\n[vitalsync]\nenabled = true\n',
+                f'[app]\ndata_dir = "{root / "app-data"}"\n\n[plugin.vitalsync]\nenabled = true\n',
                 encoding="utf-8",
             )
             active_sources: set[str] = set()
@@ -476,7 +476,7 @@ class CliTest(unittest.TestCase):
             def sync_source(name: str) -> list[Path]:
                 with active_lock:
                     for active_source in active_sources:
-                        if {name, active_source} == {"withings", "vitalsync"}:
+                        if {name, active_source} == {"vitalsync", "withings"}:
                             overlaps.append((name, active_source))
                     active_sources.add(name)
                 time.sleep(0.05)
@@ -521,7 +521,7 @@ class CliTest(unittest.TestCase):
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
             config_path.write_text(
-                f'[app]\ndata_dir = "{root / "app-data"}"\n\n[suunto]\nenabled = true\n',
+                f'[app]\ndata_dir = "{root / "app-data"}"\n\n[plugin.suunto]\nenabled = true\n',
                 encoding="utf-8",
             )
             config = load_config(config_path)

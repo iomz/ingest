@@ -13,7 +13,7 @@ from ingest.context import (
     generate_daily_context,
     render_daily_terminal_context,
 )
-from ingest.sources import hevy, suunto, vitalsync, withings
+from ingest.plugins import hevy, suunto, vitalsync, withings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,10 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = subparsers.add_parser("sync", help="Run daily incremental sync.")
     sync_subparsers = sync_parser.add_subparsers(dest="command", required=True)
-    sync_subparsers.add_parser("withings", help="Sync recent Withings measurements.")
     sync_subparsers.add_parser("hevy", help="Sync Hevy workouts from CSV export.")
     sync_subparsers.add_parser("suunto", help="Sync Suunto activities through suuntool.")
     sync_subparsers.add_parser("vitalsync", help="Sync Apple Health sleep records through Vitalsync.")
+    sync_subparsers.add_parser("withings", help="Sync recent Withings measurements.")
     sync_subparsers.add_parser("all", help="Sync recent data from all configured sources.")
 
     import_parser = subparsers.add_parser("import", help="Import exported source data.")
@@ -231,32 +231,32 @@ def _sync_all(config: AppConfig) -> list[Path]:
 
 async def _sync_all_async(config: AppConfig) -> list[Path]:
     config_update_lock = anyio.Lock()
-    sources: list[tuple[str, Callable[[], Awaitable[list[Path]]]]] = [
-        ("withings", lambda: _run_sync_source(withings.sync, config, config_update_lock)),
+    plugins: list[tuple[str, Callable[[], Awaitable[list[Path]]]]] = [
         ("hevy", lambda: _run_sync_source(hevy.sync, config)),
     ]
     if config.suunto.enabled:
-        sources.append(("suunto", lambda: suunto.sync_async(config)))
+        plugins.append(("suunto", lambda: suunto.sync_async(config)))
     if config.vitalsync.enabled:
-        sources.append(("vitalsync", lambda: _run_sync_source(vitalsync.sync, config, config_update_lock)))
+        plugins.append(("vitalsync", lambda: _run_sync_source(vitalsync.sync, config, config_update_lock)))
+    plugins.append(("withings", lambda: _run_sync_source(withings.sync, config, config_update_lock)))
     results: dict[str, list[Path]] = {}
     errors: dict[str, Exception | SystemExit] = {}
 
-    async def run_source(name: str, sync_source: Callable[[], Awaitable[list[Path]]]) -> None:
+    async def run_plugin(name: str, sync_plugin: Callable[[], Awaitable[list[Path]]]) -> None:
         try:
-            results[name] = await sync_source()
+            results[name] = await sync_plugin()
         except (Exception, SystemExit) as exc:
             errors[name] = exc
 
     async with anyio.create_task_group() as task_group:
-        for name, sync_source in sources:
-            task_group.start_soon(run_source, name, sync_source)
+        for name, sync_plugin in plugins:
+            task_group.start_soon(run_plugin, name, sync_plugin)
 
-    for name, _sync_source in sources:
+    for name, _sync_plugin in plugins:
         if name in errors:
             raise errors[name]
 
-    return [path for name, _sync_source in sources for path in results[name]]
+    return [path for name, _sync_plugin in plugins for path in results[name]]
 
 
 async def _run_sync_source(

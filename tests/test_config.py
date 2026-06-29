@@ -18,12 +18,10 @@ class ConfigTest(unittest.TestCase):
 [app]
 data_dir = "{root}/app-data"
 
-[withings]
+[plugin.withings]
 client_id = "withings-client"
 secret = "withings-secret"
-
-[sync.withings]
-days = 21
+sync_days = 21
 """.strip(),
                 encoding="utf-8",
             )
@@ -132,12 +130,10 @@ body_weight_goal = "loss"
             config_path = root / "ingest.toml"
             config_path.write_text(
                 """
-[suunto]
+[plugin.suunto]
 enabled = true
 command = "~/bin/suuntool"
-
-[sync.suunto]
-days = 14
+sync_days = 14
 """.strip(),
                 encoding="utf-8",
             )
@@ -154,15 +150,13 @@ days = 14
             config_path = root / "ingest.toml"
             config_path.write_text(
                 """
-[vitalsync]
+[plugin.vitalsync]
 enabled = true
 base_url = "https://api.example/vitalsync/v1/"
 client_id = "client_123"
 refresh_token = "refresh"
 source_bundle_id = ""
-
-[sync.vitalsync]
-days = 10
+sync_days = 10
 """.strip(),
                 encoding="utf-8",
             )
@@ -208,13 +202,13 @@ sleep = "vitalsync"
             self.assertEqual(config.context.measurement["steps"], "vitalsync")
             self.assertEqual(config.context.recovery["sleep"], "vitalsync")
 
-    def test_loads_flat_sync_schema(self) -> None:
+    def test_loads_plugin_sync_days(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "ingest.toml"
             config_path.write_text(
                 """
-[sync]
-days = 7
+[plugin.withings]
+sync_days = 7
 """.strip(),
                 encoding="utf-8",
             )
@@ -274,7 +268,7 @@ days = 7
             config_path = Path(temp_dir) / "ingest.toml"
             config_path.write_text(
                 """
-[withings]
+[plugin.withings]
 refresh_token = "old-refresh"
 """.strip(),
                 encoding="utf-8",
@@ -296,7 +290,7 @@ refresh_token = "old-refresh"
             config_path = Path(temp_dir) / "ingest.toml"
             config_path.write_text(
                 """
-[withings]
+[plugin.withings]
 refresh_token = "old-refresh"
 """.strip(),
                 encoding="utf-8",
@@ -314,7 +308,7 @@ refresh_token = "old-refresh"
             config_path = Path(temp_dir) / "ingest.toml"
             config_path.write_text(
                 """
-[vitalsync]
+[plugin.vitalsync]
 client_id = "old-client"
 refresh_token = "old-refresh"
 """.strip(),
@@ -339,9 +333,9 @@ refresh_token = "old-refresh"
             self.assertEqual(updated.vitalsync.expires_at, "2026-06-29T12:00:00Z")
 
     def test_renders_nested_tables(self) -> None:
-        rendered = render_toml({"sync": {"withings": {"days": 30}}})
-        self.assertIn("[sync.withings]", rendered)
-        self.assertIn("days = 30", rendered)
+        rendered = render_toml({"plugin": {"withings": {"sync_days": 30}}})
+        self.assertIn("[plugin.withings]", rendered)
+        self.assertIn("sync_days = 30", rendered)
 
 
 if __name__ == "__main__":

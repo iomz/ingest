@@ -1261,7 +1261,7 @@ class ContextTest(unittest.TestCase):
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
             config_path.write_text(
-                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n\n[vitalsync]\nenabled = true\n',
+                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n\n[plugin.vitalsync]\nenabled = true\n',
                 encoding="utf-8",
             )
             vitalsync_dir = data_dir / "vitalsync"
@@ -1319,7 +1319,7 @@ class ContextTest(unittest.TestCase):
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
             config_path.write_text(
-                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n\n[vitalsync]\nenabled = true\n',
+                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n\n[plugin.vitalsync]\nenabled = true\n',
                 encoding="utf-8",
             )
             header = (
@@ -1366,7 +1366,7 @@ class ContextTest(unittest.TestCase):
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
             config_path.write_text(
-                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n\n[vitalsync]\nenabled = true\n',
+                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n\n[plugin.vitalsync]\nenabled = true\n',
                 encoding="utf-8",
             )
             withings_dir = data_dir / "withings"

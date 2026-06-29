@@ -19,7 +19,7 @@ from ingest.context import (
     render_daily_context,
     render_daily_terminal_context,
 )
-from ingest.sources import suunto
+from ingest.plugins import suunto
 
 
 class SuuntoSourceTest(unittest.TestCase):
@@ -69,7 +69,7 @@ class SuuntoSourceTest(unittest.TestCase):
 data_dir = "{data_dir}"
 timezone = "Asia/Tokyo"
 
-[suunto]
+[plugin.suunto]
 enabled = true
 """.strip(),
                 encoding="utf-8",
@@ -121,7 +121,7 @@ enabled = true
 [app]
 data_dir = "{data_dir}"
 
-[suunto]
+[plugin.suunto]
 enabled = true
 command = "{command_path}"
 """.strip(),
@@ -157,7 +157,7 @@ command = "{command_path}"
             config = load_config(config_path)
 
             with mock.patch(
-                "ingest.sources.suunto.anyio.run_process",
+                "ingest.plugins.suunto.anyio.run_process",
                 new=mock.AsyncMock(return_value=process),
             ) as run_process:
                 paths = anyio.run(suunto.sync_async, config)
@@ -188,13 +188,13 @@ command = "{command_path}"
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
             config_path.write_text(
-                f'[app]\ndata_dir = "{root / "app-data"}"\n\n[sync.suunto]\ndays = 3\n',
+                f'[app]\ndata_dir = "{root / "app-data"}"\n\n[plugin.suunto]\nsync_days = 3\n',
                 encoding="utf-8",
             )
             config = load_config(config_path)
 
             with mock.patch(
-                "ingest.sources.suunto.fetch_workouts",
+                "ingest.plugins.suunto.fetch_workouts",
                 new=mock.AsyncMock(return_value=[]),
             ) as fetch_workouts:
                 anyio.run(lambda: suunto.sync_async(config, end_date=date(2026, 6, 10)))
@@ -208,7 +208,7 @@ command = "{command_path}"
             config = load_config(config_path)
 
             with mock.patch(
-                "ingest.sources.suunto.anyio.run_process",
+                "ingest.plugins.suunto.anyio.run_process",
                 new=mock.AsyncMock(side_effect=FileNotFoundError),
             ):
                 with self.assertRaisesRegex(SystemExit, "Install and log in to suuntool"):
@@ -226,7 +226,7 @@ command = "{command_path}"
             )
 
             with mock.patch(
-                "ingest.sources.suunto.anyio.run_process",
+                "ingest.plugins.suunto.anyio.run_process",
                 new=mock.AsyncMock(return_value=process),
             ):
                 with self.assertRaisesRegex(SystemExit, "AUTH_EXPIRED"):
