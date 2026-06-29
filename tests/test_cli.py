@@ -41,13 +41,10 @@ class CliTest(unittest.TestCase):
         sync_all_args = parser.parse_args(["sync", "all"])
         import_args = parser.parse_args(["import", "hevy", "--csv", "hevy.csv"])
         backfill_args = parser.parse_args(["backfill", "withings", "--from", "2026-01-01"])
-        auth_args = parser.parse_args(
-            ["auth", "withings", "auth-url", "--redirect-uri", "https://callback.example"]
-        )
+        auth_args = parser.parse_args(["auth", "withings", "auth-url", "--redirect-uri", "https://callback.example"])
+        withings_auth_args = parser.parse_args(["auth", "withings"])
         hevy_auth_args = parser.parse_args(["auth", "hevy"])
-        vitalsync_register_args = parser.parse_args(
-            ["auth", "vitalsync", "register-client", "--pairing-token", "pair"]
-        )
+        vitalsync_register_args = parser.parse_args(["auth", "vitalsync", "register-client", "--pairing-token", "pair"])
         vitalsync_refresh_args = parser.parse_args(["auth", "vitalsync", "refresh-token"])
 
         self.assertEqual(today_args.source, "today")
@@ -80,6 +77,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(auth_args.source, "auth")
         self.assertEqual(auth_args.service, "withings")
         self.assertEqual(auth_args.command, "auth-url")
+        self.assertEqual(withings_auth_args.source, "auth")
+        self.assertEqual(withings_auth_args.service, "withings")
+        self.assertIsNone(withings_auth_args.command)
         self.assertEqual(hevy_auth_args.source, "auth")
         self.assertEqual(hevy_auth_args.service, "hevy")
         self.assertEqual(vitalsync_register_args.service, "vitalsync")
@@ -129,6 +129,80 @@ class CliTest(unittest.TestCase):
             self.assertIn("https://account.withings.com/oauth2_user/authorize2", output)
             self.assertIn("client_id=client", output)
 
+    def test_auth_withings_wizard_uses_local_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n\n[plugin.withings]\n', encoding="utf-8")
+
+            stdout = io.StringIO()
+            with (
+                contextlib.redirect_stdout(stdout),
+                mock.patch(
+                    "ingest.cli.prompts.text",
+                    side_effect=["client", "http://127.0.0.1:8000/callback"],
+                ) as text_prompt,
+                mock.patch("ingest.cli.prompts.password", return_value="secret") as password_prompt,
+                mock.patch("ingest.cli.prompts.confirm", return_value=True) as confirm_prompt,
+                mock.patch(
+                    "ingest.cli.withings.authorization_url", return_value="https://withings.example/auth"
+                ) as auth_url,
+                mock.patch("ingest.cli.withings.capture_local_oauth_code", return_value="code") as capture_code,
+                mock.patch("ingest.cli.withings.exchange_authorization_code") as exchange_code,
+            ):
+                exit_code = main(["--config", str(config_path), "auth", "withings"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(text_prompt.call_count, 2)
+            password_prompt.assert_called_once_with("Withings client secret")
+            confirm_prompt.assert_called_once()
+            auth_url.assert_called_once()
+            capture_code.assert_called_once_with(
+                "https://withings.example/auth",
+                "http://127.0.0.1:8000/callback",
+                timeout_seconds=300,
+            )
+            exchange_code.assert_called_once()
+            _config_arg, kwargs = exchange_code.call_args
+            self.assertEqual(
+                kwargs,
+                {
+                    "code": "code",
+                    "redirect_uri": "http://127.0.0.1:8000/callback",
+                    "client_id": "client",
+                    "client_secret": "secret",
+                },
+            )
+            self.assertIn("https://withings.example/auth", stdout.getvalue())
+            self.assertIn(str(data_dir / "withings/auth.json"), stdout.getvalue())
+
+    def test_auth_withings_wizard_accepts_pasted_redirect_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n\n[plugin.withings]\n', encoding="utf-8")
+
+            with (
+                mock.patch(
+                    "ingest.cli.prompts.text",
+                    side_effect=[
+                        "client",
+                        "https://callback.example/withings",
+                        "https://callback.example/withings?code=code",
+                    ],
+                ),
+                mock.patch("ingest.cli.prompts.password", return_value="secret"),
+                mock.patch("ingest.cli.withings.authorization_url", return_value="https://withings.example/auth"),
+                mock.patch("ingest.cli.withings.exchange_authorization_code") as exchange_code,
+            ):
+                exit_code = main(["--config", str(config_path), "auth", "withings"])
+
+            self.assertEqual(exit_code, 0)
+            _config_arg, kwargs = exchange_code.call_args
+            self.assertEqual(kwargs["code"], "code")
+
     def test_auth_hevy_prompts_and_saves_browser_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -159,7 +233,7 @@ class CliTest(unittest.TestCase):
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
             config_path.write_text(
-                f"[app]\ndata_dir = \"{data_dir}\"\n\n[plugin.vitalsync]\nendpoint = \"https://receiver.example/vitalsync/v1\"\n",
+                f'[app]\ndata_dir = "{data_dir}"\n\n[plugin.vitalsync]\nendpoint = "https://receiver.example/vitalsync/v1"\n',
                 encoding="utf-8",
             )
 
@@ -194,7 +268,7 @@ class CliTest(unittest.TestCase):
             root = Path(temp_dir)
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
-            config_path.write_text(f"[app]\ndata_dir = \"{data_dir}\"\n\n[plugin.vitalsync]\n", encoding="utf-8")
+            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n\n[plugin.vitalsync]\n', encoding="utf-8")
             write_auth_state(data_dir, "vitalsync", {"client_id": "client", "refresh_token": "refresh"})
 
             stdout = io.StringIO()
@@ -225,7 +299,7 @@ class CliTest(unittest.TestCase):
                 (
                     f'[app]\ndata_dir = "{data_dir}"\n\n'
                     "[plugin.hevy]\n\n"
-                    "[context.activity]\nworkout = \"withings\"\n"
+                    '[context.activity]\nworkout = "withings"\n'
                 ),
                 encoding="utf-8",
             )
@@ -282,10 +356,7 @@ class CliTest(unittest.TestCase):
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
             config_path.write_text(
-                (
-                    f'[app]\ndata_dir = "{data_dir}"\n\n'
-                    "[context.activity]\nworkout = \"hevy\"\n"
-                ),
+                (f'[app]\ndata_dir = "{data_dir}"\n\n' '[context.activity]\nworkout = "hevy"\n'),
                 encoding="utf-8",
             )
 
@@ -313,10 +384,7 @@ class CliTest(unittest.TestCase):
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
             config_path.write_text(
-                (
-                    f'[app]\ndata_dir = "{data_dir}"\n\n'
-                    "[context.activity]\nworkout = \"hevy\"\n"
-                ),
+                (f'[app]\ndata_dir = "{data_dir}"\n\n' '[context.activity]\nworkout = "hevy"\n'),
                 encoding="utf-8",
             )
             withings_csv_path = data_dir / "withings/body_measures.csv"
@@ -372,7 +440,7 @@ class CliTest(unittest.TestCase):
                     "[plugin.suunto]\nenabled = false\n\n"
                     "[plugin.vitalsync]\nenabled = false\n\n"
                     "[plugin.withings]\n\n"
-                    "[context.activity]\nworkout = \"withings\"\n"
+                    '[context.activity]\nworkout = "withings"\n'
                 ),
                 encoding="utf-8",
             )
@@ -381,7 +449,7 @@ class CliTest(unittest.TestCase):
                 "\n".join(
                     [
                         "title,start_time,end_time,exercise_title,set_index",
-                        "Push Day,\"28 Mar 2025, 17:29\",\"28 Mar 2025, 18:45\",Bench Press,1",
+                        'Push Day,"28 Mar 2025, 17:29","28 Mar 2025, 18:45",Bench Press,1',
                     ]
                 )
                 + "\n",
@@ -408,7 +476,7 @@ class CliTest(unittest.TestCase):
                 (
                     f'[app]\ndata_dir = "{data_dir}"\n\n'
                     "[plugin.hevy]\n\n"
-                    "[context.activity]\nworkout = \"withings\"\n"
+                    '[context.activity]\nworkout = "withings"\n'
                 ),
                 encoding="utf-8",
             )
@@ -438,7 +506,7 @@ class CliTest(unittest.TestCase):
                     "[plugin.suunto]\nenabled = false\n\n"
                     "[plugin.vitalsync]\nenabled = false\n\n"
                     "[plugin.withings]\n\n"
-                    "[context.activity]\nworkout = \"withings\"\n"
+                    '[context.activity]\nworkout = "withings"\n'
                 ),
                 encoding="utf-8",
             )
@@ -680,9 +748,7 @@ data_dir = "{data_dir}"
                 with self.assertRaises(BaseExceptionGroup) as raised:
                     anyio.run(_sync_all_async, config)
 
-            self.assertTrue(
-                any(isinstance(exc, CancellationSignal) for exc in raised.exception.exceptions)
-            )
+            self.assertTrue(any(isinstance(exc, CancellationSignal) for exc in raised.exception.exceptions))
 
     def test_today_sync_runs_all_sources_before_rendering(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -774,10 +840,7 @@ data_dir = "{data_dir}"
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
             config_path.write_text(
-                (
-                    f'[app]\ndata_dir = "{data_dir}"\n\n'
-                    "[context.activity]\nworkout = \"withings\"\n"
-                ),
+                (f'[app]\ndata_dir = "{data_dir}"\n\n' '[context.activity]\nworkout = "withings"\n'),
                 encoding="utf-8",
             )
             withings_csv_path = data_dir / "withings/body_measures.csv"
@@ -831,10 +894,7 @@ data_dir = "{data_dir}"
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
             config_path.write_text(
-                (
-                    f'[app]\ndata_dir = "{data_dir}"\n\n'
-                    "[context.activity]\nworkout = \"withings\"\n"
-                ),
+                (f'[app]\ndata_dir = "{data_dir}"\n\n' '[context.activity]\nworkout = "withings"\n'),
                 encoding="utf-8",
             )
             withings_csv_path = data_dir / "withings/body_measures.csv"

@@ -166,6 +166,12 @@ This saves `client_id`, `refresh_token`, `access_token`, and `expires_at` to `${
 Withings OAuth helpers:
 
 ```sh
+ingest auth withings
+```
+
+The guided flow prompts for client credentials, opens the Withings authorization URL, captures localhost redirects when the registered redirect URI allows it, and otherwise accepts a pasted redirect URL or authorization code. Low-level helpers remain available:
+
+```sh
 ingest auth withings auth-url --redirect-uri "https://your-registered-callback"
 ingest auth withings exchange-code --redirect-uri "https://your-registered-callback" --code "<code>"
 ```

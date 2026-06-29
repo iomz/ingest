@@ -6,6 +6,7 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from collections.abc import Awaitable, Callable
+from urllib.parse import urlparse
 
 import anyio
 
@@ -73,7 +74,24 @@ def build_parser() -> argparse.ArgumentParser:
     auth_subparsers = auth_parser.add_subparsers(dest="service", required=True)
     auth_subparsers.add_parser("hevy", help="Log in to Hevy and save the Playwright browser session.")
     withings_auth_parser = auth_subparsers.add_parser("withings", help="Withings OAuth helpers.")
-    withings_auth_subparsers = withings_auth_parser.add_subparsers(dest="command", required=True)
+    withings_auth_parser.add_argument("--client-id", help="Withings OAuth client id.")
+    withings_auth_parser.add_argument("--client-secret", help="Withings OAuth client secret.")
+    withings_auth_parser.add_argument(
+        "--redirect-uri",
+        help="Registered Withings redirect URI. Defaults to local callback.",
+    )
+    withings_auth_parser.add_argument(
+        "--no-local-callback",
+        action="store_true",
+        help="Do not start the local OAuth callback server; prompt for pasted code instead.",
+    )
+    withings_auth_parser.add_argument(
+        "--callback-timeout-seconds",
+        type=int,
+        default=withings.LOCAL_CALLBACK_TIMEOUT_SECONDS,
+        help="Seconds to wait for the local OAuth callback.",
+    )
+    withings_auth_subparsers = withings_auth_parser.add_subparsers(dest="command", required=False)
     withings_auth_url_parser = withings_auth_subparsers.add_parser(
         "auth-url",
         help="Print a Withings OAuth URL with metrics and activity scopes.",
@@ -167,6 +185,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Hevy browser session ready: {config.hevy.browser_dir}")
         return 0
 
+    if args.source == "auth" and args.service == "withings" and args.command is None:
+        _auth_withings(config, args)
+        print(config.withings.auth_state_path)
+        return 0
+
     if args.source == "auth" and args.service == "withings" and args.command == "auth-url":
         client_id = args.client_id or config.withings.client_id or prompts.text("Withings client id")
         print(withings.authorization_url(config, redirect_uri=args.redirect_uri, state=args.state, client_id=client_id))
@@ -174,7 +197,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.source == "auth" and args.service == "withings" and args.command == "exchange-code":
         client_id = args.client_id or config.withings.client_id or prompts.text("Withings client id")
-        client_secret = args.client_secret or config.withings.client_secret or prompts.password("Withings client secret")
+        client_secret = (
+            args.client_secret or config.withings.client_secret or prompts.password("Withings client secret")
+        )
         withings.exchange_authorization_code(
             config,
             code=args.code,
@@ -247,6 +272,43 @@ def _add_daily_options(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Print Markdown instead of the terminal view.",
     )
+
+
+def _auth_withings(config: AppConfig, args: argparse.Namespace) -> None:
+    client_id = args.client_id or config.withings.client_id or prompts.text("Withings client id")
+    client_secret = args.client_secret or config.withings.client_secret or prompts.password("Withings client secret")
+    default_redirect_uri = "http://127.0.0.1:8000/callback"
+    redirect_uri = args.redirect_uri or prompts.text("Withings redirect URI", default=default_redirect_uri)
+    auth_url = withings.authorization_url(config, redirect_uri=redirect_uri, client_id=client_id)
+    code = ""
+    if not args.no_local_callback and _local_http_redirect(redirect_uri):
+        use_local_callback = prompts.confirm(
+            f"Open browser and wait for local callback at {redirect_uri}?",
+            default=True,
+        )
+        if use_local_callback:
+            print(auth_url)
+            code = withings.capture_local_oauth_code(
+                auth_url,
+                redirect_uri,
+                timeout_seconds=args.callback_timeout_seconds,
+            )
+    if not code:
+        print(auth_url)
+        pasted = prompts.text("Paste Withings redirect URL or authorization code")
+        code = withings.parse_authorization_code(pasted)
+    withings.exchange_authorization_code(
+        config,
+        code=code,
+        redirect_uri=redirect_uri,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+
+
+def _local_http_redirect(redirect_uri: str) -> bool:
+    parsed = urlparse(redirect_uri)
+    return parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"} and parsed.port is not None
 
 
 def _sync_for_daily_context(config: AppConfig, enabled: bool) -> None:

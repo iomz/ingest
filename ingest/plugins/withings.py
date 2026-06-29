@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
+import webbrowser
 from zoneinfo import ZoneInfo
 
 from ingest.activities import DEFAULT_TIMEZONE
@@ -20,6 +22,7 @@ SLEEP_URL = "https://wbsapi.withings.net/v2/sleep"
 TIMEOUT_SECONDS = 30
 BACKFILL_WINDOW_DAYS = 90
 WITHINGS_SCOPES = "user.metrics,user.activity"
+LOCAL_CALLBACK_TIMEOUT_SECONDS = 300
 
 BODY_MEASURE_TYPES = {
     1: ("weight", "kg"),
@@ -247,6 +250,65 @@ def exchange_authorization_code(
         )
     body = _withings_body(response, "Withings authorization code exchange failed")
     update_withings_tokens(config, body)
+
+
+def capture_local_oauth_code(auth_url: str, redirect_uri: str, *, timeout_seconds: int) -> str:
+    parsed_redirect = urlparse(redirect_uri)
+    if parsed_redirect.scheme != "http" or parsed_redirect.hostname not in {"127.0.0.1", "localhost"}:
+        raise SystemExit("Local Withings callback requires an http://127.0.0.1 or http://localhost redirect URI.")
+    if parsed_redirect.port is None:
+        raise SystemExit("Local Withings callback redirect URI must include a port.")
+
+    result: dict[str, str] = {}
+
+    class CallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            query = parse_qs(urlparse(self.path).query)
+            code = (query.get("code") or [""])[0]
+            error = (query.get("error") or [""])[0]
+            if code:
+                result["code"] = code
+                self._send_response("Withings authorization complete. You can close this tab.")
+                return
+            result["error"] = error or "missing authorization code"
+            self._send_response("Withings authorization failed. Return to the terminal.")
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+        def _send_response(self, message: str) -> None:
+            body = f"<html><body><p>{message}</p></body></html>".encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = HTTPServer((parsed_redirect.hostname, parsed_redirect.port), CallbackHandler)
+    server.timeout = max(1, timeout_seconds)
+    try:
+        webbrowser.open(auth_url)
+        server.handle_request()
+    finally:
+        server.server_close()
+
+    if "code" in result:
+        return result["code"]
+    if "error" in result:
+        raise SystemExit(f"Withings authorization failed: {result['error']}")
+    raise SystemExit("Timed out waiting for Withings OAuth callback.")
+
+
+def parse_authorization_code(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise SystemExit("Missing Withings authorization code.")
+    parsed = urlparse(stripped)
+    if parsed.query:
+        code = (parse_qs(parsed.query).get("code") or [""])[0]
+        if code:
+            return code
+    return stripped
 
 
 def refresh_access_token(session: Any, config: AppConfig) -> str:

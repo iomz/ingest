@@ -29,6 +29,7 @@ from ingest.plugins.withings import (
     normalize_measure_groups,
     normalize_sleep_summaries,
     normalize_workouts,
+    parse_authorization_code,
     sync,
     sync_range,
     summarize_sleep_states,
@@ -230,6 +231,13 @@ class WithingsTest(unittest.TestCase):
             self.assertIn("client_id=client-id", url)
             self.assertIn("scope=user.metrics%2Cuser.activity", url)
             self.assertIn("redirect_uri=https%3A%2F%2Fexample.test%2Fcallback", url)
+
+    def test_parses_authorization_code_from_redirect_url_or_raw_code(self) -> None:
+        self.assertEqual(
+            parse_authorization_code("https://callback.example/withings?state=x&code=abc123"),
+            "abc123",
+        )
+        self.assertEqual(parse_authorization_code("abc123"), "abc123")
 
     def test_normalizes_workouts(self) -> None:
         rows = normalize_workouts(
