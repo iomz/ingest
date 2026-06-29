@@ -59,9 +59,17 @@ class VitalsyncConfig:
     expires_at: str
     source_bundle_id: str
     sleep_csv: Path
+    steps_csv: Path
     blood_pressure_csv: Path
     raw_dir: Path
     days: int
+
+
+@dataclass(frozen=True)
+class ContextConfig:
+    activity: dict[str, Any]
+    measurement: dict[str, Any]
+    recovery: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -82,6 +90,7 @@ class AppConfig:
     hevy: HevyConfig
     suunto: SuuntoConfig
     vitalsync: VitalsyncConfig
+    context: ContextConfig
     ui: UIConfig
 
     @property
@@ -92,6 +101,8 @@ class AppConfig:
 def load_config(path: Path | str | None = None) -> AppConfig:
     config_path = Path(path).expanduser() if path is not None else default_config_path()
     if not config_path.exists():
+        if path is None:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
         raise SystemExit(
             f"Missing {config_path}. Copy {DEFAULT_CONFIG_EXAMPLE_PATH} to {config_path} and fill it in."
         )
@@ -110,6 +121,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
     hevy = _load_hevy_config(data, data_dir)
     suunto = _load_suunto_config(data, data_dir)
     vitalsync = _load_vitalsync_config(data, data_dir)
+    context = _load_context_config(data)
     ui = _load_ui_config(data)
     return AppConfig(
         path=config_path,
@@ -122,6 +134,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         hevy=hevy,
         suunto=suunto,
         vitalsync=vitalsync,
+        context=context,
         ui=ui,
     )
 
@@ -314,6 +327,12 @@ def _load_vitalsync_config(data: dict[str, Any], data_dir: Path) -> VitalsyncCon
             "vitalsync.sleep_csv",
             Path("vitalsync/sleep.csv"),
         ),
+        steps_csv=_configured_data_path(
+            data_dir,
+            vitalsync,
+            "vitalsync.steps_csv",
+            Path("vitalsync/steps.csv"),
+        ),
         blood_pressure_csv=_configured_data_path(
             data_dir,
             vitalsync,
@@ -323,6 +342,26 @@ def _load_vitalsync_config(data: dict[str, Any], data_dir: Path) -> VitalsyncCon
         raw_dir=_configured_data_path(data_dir, vitalsync, "vitalsync.raw_dir", Path("vitalsync/raw")),
         days=_positive_int(sync.get("days", 30), "sync.vitalsync.days"),
     )
+
+
+def _load_context_config(data: dict[str, Any]) -> ContextConfig:
+    context = data.get("context", {})
+    if context and not isinstance(context, dict):
+        raise SystemExit("context must be a table.")
+    return ContextConfig(
+        activity=_context_section(context, "activity"),
+        measurement=_context_section(context, "measurement"),
+        recovery=_context_section(context, "recovery"),
+    )
+
+
+def _context_section(context: dict[str, Any], name: str) -> dict[str, Any]:
+    section = context.get(name, {})
+    if section == "":
+        return {}
+    if not isinstance(section, dict):
+        raise SystemExit(f"context.{name} must be a table.")
+    return section
 
 
 def _load_ui_config(data: dict[str, Any]) -> UIConfig:

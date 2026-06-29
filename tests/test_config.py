@@ -54,6 +54,7 @@ days = 21
             self.assertFalse(config.vitalsync.enabled)
             self.assertEqual(config.vitalsync.base_url, "https://api.sazanka.io/vitalsync/v1")
             self.assertEqual(config.vitalsync.sleep_csv, root / "app-data/vitalsync/sleep.csv")
+            self.assertEqual(config.vitalsync.steps_csv, root / "app-data/vitalsync/steps.csv")
             self.assertEqual(
                 config.vitalsync.blood_pressure_csv,
                 root / "app-data/vitalsync/blood_pressure.csv",
@@ -175,6 +176,38 @@ days = 10
             self.assertEqual(config.vitalsync.source_bundle_id, "")
             self.assertEqual(config.vitalsync.days, 10)
 
+    def test_loads_context_source_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text(
+                """
+[context.activity]
+default = "suunto"
+
+[context.activity.workout]
+default = "suunto"
+sets = "hevy"
+load = "suunto"
+
+[context.measurement]
+default = "withings"
+steps = "vitalsync"
+blood_pressure = "vitalsync"
+
+[context.recovery]
+default = "vitalsync"
+sleep = "vitalsync"
+""".strip(),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertEqual(config.context.activity["default"], "suunto")
+            self.assertEqual(config.context.activity["workout"]["sets"], "hevy")
+            self.assertEqual(config.context.measurement["steps"], "vitalsync")
+            self.assertEqual(config.context.recovery["sleep"], "vitalsync")
+
     def test_loads_flat_sync_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "ingest.toml"
@@ -212,14 +245,29 @@ days = 7
 
     def test_uses_xdg_config_home_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config/ingest.toml"
-            config_path.parent.mkdir()
+            config_path = Path(temp_dir) / "config/ingest/config.toml"
+            config_path.parent.mkdir(parents=True)
             config_path.write_text("", encoding="utf-8")
 
-            with patch.dict("os.environ", {"XDG_CONFIG_HOME": str(config_path.parent)}):
+            with patch.dict("os.environ", {"XDG_CONFIG_HOME": str(Path(temp_dir) / "config")}):
                 config = load_config()
 
             self.assertEqual(config.path, config_path)
+
+    def test_missing_default_config_creates_parent_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_root = Path(temp_dir) / "config"
+            config_path = config_root / "ingest/config.toml"
+
+            with (
+                patch.dict("os.environ", {"XDG_CONFIG_HOME": str(config_root)}),
+                self.assertRaises(SystemExit) as context,
+            ):
+                load_config()
+
+            self.assertTrue(config_path.parent.exists())
+            self.assertFalse(config_path.exists())
+            self.assertIn(str(config_path), str(context.exception))
 
     def test_updates_withings_tokens_and_rotates_refresh_token_when_returned(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

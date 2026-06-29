@@ -4,6 +4,7 @@ import csv
 import math
 import re
 import shutil
+import sys
 import textwrap
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
@@ -27,15 +28,45 @@ from ingest.ui import DEFAULT_THEME, TerminalTheme, terminal_theme
 class DailyState:
     target_date: date
     activities: list[NormalizedActivity]
-    measures: list[dict[str, str]]
-    withings_activity_summaries: list[dict[str, str]]
-    historical_withings_activity_summaries: list[dict[str, str]]
-    historical_activities: list[NormalizedActivity]
-    historical_measures: list[dict[str, str]]
-    hevy_sets: list[dict[str, str]]
+    measures: list[dict[str, str]] = field(default_factory=list)
+    step_records: list[dict[str, str]] = field(default_factory=list)
+    historical_step_records: list[dict[str, str]] = field(default_factory=list)
+    historical_activities: list[NormalizedActivity] = field(default_factory=list)
+    historical_measures: list[dict[str, str]] = field(default_factory=list)
+    hevy_sets: list[dict[str, str]] = field(default_factory=list)
     sleep_records: list[dict[str, str]] = field(default_factory=list)
     historical_sleep_records: list[dict[str, str]] = field(default_factory=list)
     blood_pressure_records: list[dict[str, str]] = field(default_factory=list)
+    load_activities: list[NormalizedActivity] = field(default_factory=list)
+    historical_load_activities: list[NormalizedActivity] = field(default_factory=list)
+    step_source: str = ""
+    measurement_source: str = ""
+    blood_pressure_source: str = ""
+    sleep_source: str = ""
+    workout_source: str = ""
+    load_source: str = ""
+    sets_source: str = ""
+    context_warnings: list[str] = field(default_factory=list)
+    withings_activity_summaries: list[dict[str, str]] = field(default_factory=list)
+    historical_withings_activity_summaries: list[dict[str, str]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.step_records and self.withings_activity_summaries:
+            object.__setattr__(self, "step_records", self.withings_activity_summaries)
+        if not self.historical_step_records and self.historical_withings_activity_summaries:
+            object.__setattr__(
+                self,
+                "historical_step_records",
+                self.historical_withings_activity_summaries,
+            )
+        if not self.load_activities:
+            object.__setattr__(self, "load_activities", self.activities)
+        if not self.historical_load_activities:
+            object.__setattr__(
+                self,
+                "historical_load_activities",
+                self.historical_activities,
+            )
 
 
 @dataclass(frozen=True)
@@ -94,6 +125,121 @@ def generate_today_context(config: AppConfig, target_date: date | None = None) -
     return generate_daily_context(config, target_date)
 
 
+BUILTIN_CONTEXT_DEFAULTS: dict[tuple[str, ...], str] = {
+    ("activity",): "suunto",
+    ("activity", "workout"): "suunto",
+    ("activity", "workout", "sets"): "hevy",
+    ("activity", "workout", "load"): "suunto",
+    ("measurement",): "withings",
+    ("measurement", "steps"): "vitalsync",
+    ("measurement", "weight"): "withings",
+    ("measurement", "lean_mass"): "withings",
+    ("measurement", "fat_mass"): "withings",
+    ("measurement", "blood_pressure"): "vitalsync",
+    ("recovery",): "vitalsync",
+    ("recovery", "sleep"): "vitalsync",
+}
+
+SUPPORTED_CONTEXT_SOURCES: dict[tuple[str, ...], set[str]] = {
+    ("activity", "workout"): {"withings", "hevy", "suunto"},
+    ("activity", "workout", "sets"): {"hevy", "none"},
+    ("activity", "workout", "load"): {"suunto", "none"},
+    ("measurement", "steps"): {"withings", "vitalsync", "none"},
+    ("measurement", "weight"): {"withings", "none"},
+    ("measurement", "lean_mass"): {"withings", "none"},
+    ("measurement", "fat_mass"): {"withings", "none"},
+    ("measurement", "blood_pressure"): {"vitalsync", "none"},
+    ("recovery", "sleep"): {"withings", "vitalsync", "none"},
+}
+
+
+def _context_source(
+    config: AppConfig,
+    path: tuple[str, ...],
+    warnings: list[str],
+) -> str | None:
+    configured = _configured_context_source(config, path, warnings)
+    source = configured or _builtin_context_source(path)
+    if source is None:
+        return None
+    if source == "none":
+        return None
+    supported = SUPPORTED_CONTEXT_SOURCES.get(path, set())
+    if source not in supported:
+        _context_warning(
+            warnings,
+            f"context.{'.'.join(path)} source {source!r} is not supported; skipping.",
+        )
+        return None
+    return source
+
+
+def _configured_context_source(
+    config: AppConfig,
+    path: tuple[str, ...],
+    warnings: list[str],
+) -> str | None:
+    section: Any = getattr(config.context, path[0])
+    if not isinstance(section, dict):
+        return None
+    selected: str | None = _string_context_value(section.get("default"), path[:1], warnings)
+    for index, key in enumerate(path[1:], start=1):
+        if not isinstance(section, dict):
+            return selected
+        value = section.get(key)
+        if isinstance(value, dict):
+            section = value
+            selected = _string_context_value(section.get("default"), path[: index + 1], warnings) or selected
+            continue
+        if value is not None:
+            return _string_context_value(value, path[: index + 1], warnings) or selected
+        return selected
+    return selected
+
+
+def _string_context_value(
+    value: Any,
+    path: tuple[str, ...],
+    warnings: list[str],
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        _context_warning(
+            warnings,
+            f"context.{'.'.join(path)} must be a source string; skipping.",
+        )
+        return None
+    source = value.strip().lower()
+    return source or None
+
+
+def _builtin_context_source(path: tuple[str, ...]) -> str | None:
+    for length in range(len(path), 0, -1):
+        source = BUILTIN_CONTEXT_DEFAULTS.get(path[:length])
+        if source is not None:
+            return source
+    return None
+
+
+def _context_warning(warnings: list[str], message: str) -> None:
+    if message in warnings:
+        return
+    warnings.append(message)
+    print(f"ingest context warning: {message}", file=sys.stderr)
+
+
+def _source_label(source: str | None) -> str:
+    if not source:
+        return "None"
+    return {
+        "hevy": "Hevy",
+        "suunto": "Suunto",
+        "vitalsync": "Vitalsync",
+        "withings": "Withings",
+    }.get(source, source.title())
+
+
 def render_daily_terminal_context(
     state: DailyState,
     console: Any | None = None,
@@ -108,10 +254,10 @@ def render_daily_terminal_context(
     theme = terminal_theme(ui.theme)
     target_date = state.target_date
     activities = state.activities
-    withings_steps = _withings_step_count(state.withings_activity_summaries)
+    steps = _step_count(state.step_records)
     sleep = _primary_sleep(state.sleep_records)
     logged_duration_min = sum(activity.duration_min for activity in activities)
-    withings_steps_text = _format_terminal_step_count(withings_steps)
+    steps_text = _format_terminal_step_count(steps)
     walking_distance_km = sum(
         activity.distance_km or 0.0
         for activity in activities
@@ -147,12 +293,12 @@ def render_daily_terminal_context(
         target_date,
     )
     training_load_trend = _training_load_trend_metric(
-        state.historical_activities,
+        state.historical_load_activities,
         target_date,
     )
-    suunto_metrics = _suunto_daily_metrics(activities)
+    suunto_metrics = _suunto_daily_metrics(state.load_activities)
     training_load_metrics = _training_load_metrics(
-        state.historical_activities,
+        state.historical_load_activities,
         target_date,
     )
 
@@ -169,11 +315,11 @@ def render_daily_terminal_context(
             (
                 "Movement",
                 _snapshot_movement_status(
-                    withings_steps,
+                    steps,
                     walking_distance_km,
                     ride_distance_km,
                     swimming_duration_min,
-                    formatted_steps=withings_steps_text,
+                    formatted_steps=steps_text,
                     separator=" / ",
                 ),
             ),
@@ -380,7 +526,7 @@ def render_daily_terminal_context(
         console,
         _terminal_data_coverage_rows(
             activities,
-            withings_steps,
+            steps,
             state.measures,
             state.blood_pressure_records,
             training_load_metrics,
@@ -397,7 +543,7 @@ def render_daily_terminal_context(
         _ai_handoff(
             activities=activities,
             total_duration_min=logged_duration_min,
-            withings_steps_text=withings_steps_text,
+            steps_text=steps_text,
             walking_distance_km=walking_distance_km,
             swimming_duration_min=swimming_duration_min,
             swimming_distance_km=swimming_distance_km,
@@ -424,44 +570,62 @@ def render_daily_terminal_context(
 
 
 def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
-    withings_activities = [] if config.suunto.enabled else read_withings_activities(config.withings.workouts_csv)
-    hevy_activities = read_hevy_activities(config.hevy.workouts_csv)
-    suunto_activities = read_suunto_activities(config.suunto.workouts_csv)
-    hevy_sets = sets_for_date(
-        read_hevy_sets(config.hevy.sets_csv),
-        target_date,
+    warnings: list[str] = []
+    workout_source = _context_source(config, ("activity", "workout"), warnings)
+    sets_source = _context_source(config, ("activity", "workout", "sets"), warnings)
+    load_source = _context_source(config, ("activity", "workout", "load"), warnings)
+    step_source = _context_source(config, ("measurement", "steps"), warnings)
+    measurement_source = _context_source(config, ("measurement", "weight"), warnings)
+    blood_pressure_source = _context_source(config, ("measurement", "blood_pressure"), warnings)
+    sleep_source = _context_source(config, ("recovery", "sleep"), warnings)
+
+    all_workout_activities = _read_context_activities(
+        config,
+        workout_source,
         config.timezone,
+        ("activity", "workout"),
+        warnings,
     )
-    all_measures = read_withings_measures(config.withings.measures_csv)
-    measures = measures_for_date(all_measures, target_date)
-    all_withings_activity_summaries = read_withings_activity_summaries(config.withings.activity_csv)
-    withings_activity_summaries = withings_activity_summaries_for_date(
-        all_withings_activity_summaries,
-        target_date,
+    all_load_activities = _read_context_activities(
+        config,
+        load_source,
+        config.timezone,
+        ("activity", "workout", "load"),
+        warnings,
     )
-    all_sleep_records = (
-        read_vitalsync_sleep(config.vitalsync.sleep_csv)
-        if config.vitalsync.enabled
-        else read_withings_sleep(config.withings.sleep_csv)
-    )
-    sleep_records = sleep_records_for_date(all_sleep_records, target_date)
-    all_blood_pressure_records = (
-        read_vitalsync_blood_pressure(config.vitalsync.blood_pressure_csv)
-        if config.vitalsync.enabled
+    all_hevy_activities = (
+        _read_context_activities(
+            config,
+            "hevy",
+            config.timezone,
+            ("activity", "workout", "sets"),
+            warnings,
+        )
+        if sets_source == "hevy" and workout_source == "suunto"
         else []
+    )
+    normalized_activities = _apply_strength_details(
+        all_workout_activities,
+        all_hevy_activities,
+        sets_source,
+    )
+
+    all_hevy_sets = _read_context_sets(config, sets_source, warnings)
+    hevy_sets = sets_for_date(all_hevy_sets, target_date, config.timezone)
+    all_measures = _read_context_measures(config, measurement_source, warnings)
+    measures = measures_for_date(all_measures, target_date)
+    all_step_records = _read_context_steps(config, step_source, warnings)
+    step_records = step_records_for_date(all_step_records, target_date)
+    all_sleep_records = _read_context_sleep(config, sleep_source, warnings)
+    sleep_records = sleep_records_for_date(all_sleep_records, target_date)
+    all_blood_pressure_records = _read_context_blood_pressure(
+        config,
+        blood_pressure_source,
+        warnings,
     )
     blood_pressure_records = blood_pressure_records_for_date(
         all_blood_pressure_records,
         target_date,
-    )
-    normalized_activities = _prefer_suunto_activities(
-        _pair_hevy_suunto_strength(
-            [
-                *_normalize_withings_activities(withings_activities, config.timezone),
-                *_normalize_hevy_activities(hevy_activities, config.timezone),
-                *_normalize_suunto_activities(suunto_activities, config.timezone),
-            ]
-        )
     )
     return DailyState(
         target_date=target_date,
@@ -470,16 +634,159 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
             for activity in normalized_activities
             if _activity_date(activity.start_time) == target_date
         ],
+        load_activities=[
+            activity
+            for activity in all_load_activities
+            if _activity_date(activity.start_time) == target_date
+        ],
+        historical_load_activities=all_load_activities,
         measures=measures,
-        withings_activity_summaries=withings_activity_summaries,
-        historical_withings_activity_summaries=all_withings_activity_summaries,
+        step_records=step_records,
+        historical_step_records=all_step_records,
         historical_activities=normalized_activities,
         historical_measures=all_measures,
         hevy_sets=hevy_sets,
         sleep_records=sleep_records,
         historical_sleep_records=all_sleep_records,
         blood_pressure_records=blood_pressure_records,
+        step_source=step_source or "",
+        measurement_source=measurement_source or "",
+        blood_pressure_source=blood_pressure_source or "",
+        sleep_source=sleep_source or "",
+        workout_source=workout_source or "",
+        load_source=load_source or "",
+        sets_source=sets_source or "",
+        context_warnings=warnings,
     )
+
+
+def _read_context_activities(
+    config: AppConfig,
+    source: str | None,
+    local_timezone: ZoneInfo,
+    path: tuple[str, ...],
+    warnings: list[str],
+) -> list[NormalizedActivity]:
+    if source is None:
+        return []
+    source_path = {
+        "withings": config.withings.workouts_csv,
+        "hevy": config.hevy.workouts_csv,
+        "suunto": config.suunto.workouts_csv,
+    }.get(source)
+    if source_path is None:
+        _context_warning(warnings, f"context.{'.'.join(path)} source {source!r} has no workout reader; skipping.")
+        return []
+    if not source_path.exists():
+        _context_warning(warnings, f"context.{'.'.join(path)} source {source!r} file is missing: {source_path}")
+        return []
+    if source == "withings":
+        return _normalize_withings_activities(read_withings_activities(source_path), local_timezone)
+    if source == "hevy":
+        return _normalize_hevy_activities(read_hevy_activities(source_path), local_timezone)
+    if source == "suunto":
+        return _normalize_suunto_activities(read_suunto_activities(source_path), local_timezone)
+    return []
+
+
+def _apply_strength_details(
+    primary_activities: list[NormalizedActivity],
+    detail_activities: list[NormalizedActivity],
+    sets_source: str | None,
+) -> list[NormalizedActivity]:
+    if sets_source == "hevy" and detail_activities:
+        return _pair_hevy_suunto_strength([*primary_activities, *detail_activities])
+    return primary_activities
+
+
+def _read_context_sets(
+    config: AppConfig,
+    source: str | None,
+    warnings: list[str],
+) -> list[dict[str, str]]:
+    if source is None:
+        return []
+    if source != "hevy":
+        _context_warning(warnings, f"context.activity.workout.sets source {source!r} has no set reader; skipping.")
+        return []
+    if not config.hevy.sets_csv.exists():
+        _context_warning(warnings, f"context.activity.workout.sets source {source!r} file is missing: {config.hevy.sets_csv}")
+        return []
+    return read_hevy_sets(config.hevy.sets_csv)
+
+
+def _read_context_measures(
+    config: AppConfig,
+    source: str | None,
+    warnings: list[str],
+) -> list[dict[str, str]]:
+    if source is None:
+        return []
+    if source != "withings":
+        _context_warning(warnings, f"context.measurement.weight source {source!r} has no measurement reader; skipping.")
+        return []
+    if not config.withings.measures_csv.exists():
+        _context_warning(warnings, f"context.measurement source {source!r} file is missing: {config.withings.measures_csv}")
+        return []
+    return read_withings_measures(config.withings.measures_csv)
+
+
+def _read_context_steps(
+    config: AppConfig,
+    source: str | None,
+    warnings: list[str],
+) -> list[dict[str, str]]:
+    if source is None:
+        return []
+    path = {
+        "withings": config.withings.activity_csv,
+        "vitalsync": config.vitalsync.steps_csv,
+    }.get(source)
+    if path is None:
+        _context_warning(warnings, f"context.measurement.steps source {source!r} has no steps reader; skipping.")
+        return []
+    if not path.exists():
+        _context_warning(warnings, f"context.measurement.steps source {source!r} file is missing: {path}")
+        return []
+    return read_step_records(path)
+
+
+def _read_context_sleep(
+    config: AppConfig,
+    source: str | None,
+    warnings: list[str],
+) -> list[dict[str, str]]:
+    if source is None:
+        return []
+    path = {
+        "withings": config.withings.sleep_csv,
+        "vitalsync": config.vitalsync.sleep_csv,
+    }.get(source)
+    if path is None:
+        _context_warning(warnings, f"context.recovery.sleep source {source!r} has no sleep reader; skipping.")
+        return []
+    if not path.exists():
+        _context_warning(warnings, f"context.recovery.sleep source {source!r} file is missing: {path}")
+        return []
+    if source == "withings":
+        return read_withings_sleep(path)
+    return read_vitalsync_sleep(path)
+
+
+def _read_context_blood_pressure(
+    config: AppConfig,
+    source: str | None,
+    warnings: list[str],
+) -> list[dict[str, str]]:
+    if source is None:
+        return []
+    if source != "vitalsync":
+        _context_warning(warnings, f"context.measurement.blood_pressure source {source!r} has no blood pressure reader; skipping.")
+        return []
+    if not config.vitalsync.blood_pressure_csv.exists():
+        _context_warning(warnings, f"context.measurement.blood_pressure source {source!r} file is missing: {config.vitalsync.blood_pressure_csv}")
+        return []
+    return read_vitalsync_blood_pressure(config.vitalsync.blood_pressure_csv)
 
 
 def read_withings_measures(path: Path) -> list[dict[str, str]]:
@@ -490,7 +797,7 @@ def read_withings_measures(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(csv_file))
 
 
-def read_withings_activity_summaries(path: Path) -> list[dict[str, str]]:
+def read_step_records(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
 
@@ -588,7 +895,7 @@ def measures_for_date(measures: list[dict[str, str]], target_date: date) -> list
     return [measure for measure in measures if measure.get("date") == target]
 
 
-def withings_activity_summaries_for_date(
+def step_records_for_date(
     activity_summaries: list[dict[str, str]],
     target_date: date,
 ) -> list[dict[str, str]]:
@@ -619,21 +926,27 @@ def render_daily_context(
     historical_measures: list[dict[str, str]] | None = None,
     historical_activities: list[dict[str, str]] | None = None,
     hevy_sets: list[dict[str, str]] | None = None,
-    withings_activity_summaries: list[dict[str, str]] | None = None,
-    historical_withings_activity_summaries: list[dict[str, str]] | None = None,
+    step_records: list[dict[str, str]] | None = None,
+    historical_step_records: list[dict[str, str]] | None = None,
     local_timezone: ZoneInfo = DEFAULT_TIMEZONE,
     sleep_records: list[dict[str, str]] | None = None,
     historical_sleep_records: list[dict[str, str]] | None = None,
     blood_pressure_records: list[dict[str, str]] | None = None,
+    withings_activity_summaries: list[dict[str, str]] | None = None,
+    historical_withings_activity_summaries: list[dict[str, str]] | None = None,
 ) -> str:
     measures = measures or []
     historical_measures = historical_measures if historical_measures is not None else measures
     historical_activities = historical_activities if historical_activities is not None else activities
-    withings_activity_summaries = withings_activity_summaries or []
-    historical_withings_activity_summaries = (
-        historical_withings_activity_summaries
-        if historical_withings_activity_summaries is not None
-        else withings_activity_summaries
+    step_records = step_records or []
+    if withings_activity_summaries is not None:
+        step_records = withings_activity_summaries
+    if historical_withings_activity_summaries is not None:
+        historical_step_records = historical_withings_activity_summaries
+    historical_step_records = (
+        historical_step_records
+        if historical_step_records is not None
+        else step_records
     )
     sleep_records = sleep_records or []
     blood_pressure_records = blood_pressure_records or []
@@ -649,9 +962,11 @@ def render_daily_context(
                 _normalize_activities(activities, local_timezone)
             )
         ),
+        load_activities=_normalize_activities(activities, local_timezone),
+        historical_load_activities=_normalize_activities(historical_activities, local_timezone),
         measures=measures,
-        withings_activity_summaries=withings_activity_summaries,
-        historical_withings_activity_summaries=historical_withings_activity_summaries,
+        step_records=step_records,
+        historical_step_records=historical_step_records,
         historical_activities=_prefer_suunto_activities(
             _pair_hevy_suunto_strength(
                 _normalize_activities(historical_activities, local_timezone)
@@ -662,6 +977,9 @@ def render_daily_context(
         sleep_records=sleep_records,
         historical_sleep_records=historical_sleep_records,
         blood_pressure_records=blood_pressure_records,
+        step_source="withings" if step_records else "",
+        measurement_source="withings" if measures else "",
+        blood_pressure_source="vitalsync" if blood_pressure_records else "",
     )
     return _render_daily_state(state)
 
@@ -681,10 +999,10 @@ def _render_daily_state(state: DailyState) -> str:
     primary_today_activities = state.activities
     historical_normalized_activities = state.historical_activities
     measures = state.measures
-    withings_steps = _withings_step_count(state.withings_activity_summaries)
+    steps = _step_count(state.step_records)
     sleep = _primary_sleep(state.sleep_records)
     logged_duration_min = sum(activity.duration_min for activity in primary_today_activities)
-    withings_steps_text = _format_step_count(withings_steps)
+    steps_text = _format_step_count(steps)
     walking_distance_km = sum(
         activity.distance_km or 0.0
         for activity in primary_today_activities
@@ -718,10 +1036,7 @@ def _render_daily_state(state: DailyState) -> str:
         historical_normalized_activities,
         target_date,
     )
-    training_load_trend = _training_load_trend_metric(
-        historical_normalized_activities,
-        target_date,
-    )
+    training_load_trend = _training_load_trend_metric(state.historical_load_activities, target_date)
     ride_distance_km = sum(
         activity.distance_km or 0.0
         for activity in primary_today_activities
@@ -733,11 +1048,8 @@ def _render_daily_state(state: DailyState) -> str:
         target_date,
         state.blood_pressure_records,
     )
-    suunto_metrics = _suunto_daily_metrics(primary_today_activities)
-    training_load_metrics = _training_load_metrics(
-        historical_normalized_activities,
-        target_date,
-    )
+    suunto_metrics = _suunto_daily_metrics(state.load_activities)
+    training_load_metrics = _training_load_metrics(state.historical_load_activities, target_date)
     workout_trends = [
         *activity_trends,
         *([training_load_trend] if training_load_trend is not None else []),
@@ -750,7 +1062,7 @@ def _render_daily_state(state: DailyState) -> str:
         "",
         "| Area | Status |",
         "| --- | --- |",
-        f"| Movement | {_snapshot_movement_status(withings_steps, walking_distance_km, ride_distance_km, swimming_duration_min)} |",
+        f"| Movement | {_snapshot_movement_status(steps, walking_distance_km, ride_distance_km, swimming_duration_min)} |",
         *[
             f"| {label} | {value} |"
             for label, value in _suunto_summary_rows(
@@ -829,8 +1141,8 @@ def _render_daily_state(state: DailyState) -> str:
             "## Data Coverage",
             "",
             f"- Workout source: {_activity_sources(primary_today_activities)}",
-            f"- Step source: {'Withings' if withings_steps is not None else 'None'}",
-            f"- Body source: {_body_source_label(measures, state.blood_pressure_records)}",
+            f"- Step source: {_step_source_label(steps, state.step_records, state.step_source)}",
+            f"- Body source: {_body_source_label(measures, state.blood_pressure_records, state.measurement_source, state.blood_pressure_source)}",
             f"- Sleep source: {_sleep_source_label(sleep)}",
             f"- Activity count: {len(primary_today_activities)} primary",
             *(
@@ -841,14 +1153,14 @@ def _render_daily_state(state: DailyState) -> str:
                 if training_load_metrics is not None
                 else []
             ),
-            f"- Missing or partial data: {_missing_data_summary(withings_steps, measures, primary_today_activities, sleep, _sleep_expected(state.historical_sleep_records, target_date))}",
+            f"- Missing or partial data: {_missing_data_summary(steps, measures, primary_today_activities, sleep, _sleep_expected(state.historical_sleep_records, target_date))}",
             "",
             "## Machine Handoff",
             "",
             _ai_handoff(
                 activities=primary_today_activities,
                 total_duration_min=logged_duration_min,
-                withings_steps_text=withings_steps_text,
+                steps_text=steps_text,
                 walking_distance_km=walking_distance_km,
                 swimming_duration_min=swimming_duration_min,
                 swimming_distance_km=swimming_distance_km,
@@ -877,7 +1189,7 @@ def _render_daily_state(state: DailyState) -> str:
 
 
 def _snapshot_movement_status(
-    withings_steps: int | None,
+    steps: int | None,
     walking_distance_km: float,
     ride_distance_km: float,
     swimming_duration_min: float,
@@ -885,7 +1197,7 @@ def _snapshot_movement_status(
     formatted_steps: str | None = None,
     separator: str = " · ",
 ) -> str:
-    step_part = f"{formatted_steps or _format_step_count(withings_steps)} steps"
+    step_part = f"{formatted_steps or _format_step_count(steps)} steps"
     movement_parts: list[str] = []
     if walking_distance_km > 0:
         movement_parts.append(f"{walking_distance_km:.2f} km walk")
@@ -893,7 +1205,7 @@ def _snapshot_movement_status(
         movement_parts.append(f"{ride_distance_km:.2f} km ride")
     if swimming_duration_min > 0:
         movement_parts.append(f"{swimming_duration_min:.0f} min swim")
-    if withings_steps is None and walking_distance_km <= 0 and movement_parts:
+    if steps is None and walking_distance_km <= 0 and movement_parts:
         parts = [*movement_parts, "steps unavailable"]
     else:
         parts = [step_part, *movement_parts]
@@ -1750,15 +2062,15 @@ def _compact_body_fat_value(measures: dict[str, dict[str, str]]) -> str:
 
 
 def _missing_data_summary(
-    withings_steps: int | None,
+    steps: int | None,
     measures: list[dict[str, str]],
     activities: list[NormalizedActivity],
     sleep: dict[str, str] | None = None,
     sleep_expected: bool = False,
 ) -> str:
     missing: list[str] = []
-    if withings_steps is None:
-        missing.append("Withings steps unavailable")
+    if steps is None:
+        missing.append("steps unavailable")
     if not measures:
         missing.append("body measures unavailable")
     if not activities:
@@ -1770,21 +2082,47 @@ def _missing_data_summary(
     return "; ".join(missing)
 
 
+def _record_source_label(records: list[dict[str, str]]) -> str:
+    sources = sorted(
+        {
+            _source_label(str(record.get("source", "")).strip().lower())
+            for record in records
+            if str(record.get("source", "")).strip()
+        }
+    )
+    return ", ".join(sources) if sources else "None"
+
+
+def _step_source_label(
+    steps: int | None,
+    records: list[dict[str, str]],
+    configured_source: str,
+) -> str:
+    if steps is None:
+        return "None"
+    observed = _record_source_label(records)
+    if observed != "None":
+        return observed
+    return _source_label(configured_source or "withings")
+
+
 def _body_source_label(
     measures: list[dict[str, str]],
     blood_pressure_records: list[dict[str, str]],
+    measurement_source: str = "",
+    blood_pressure_source: str = "",
 ) -> str:
     sources = []
     if measures:
-        sources.append("Withings")
+        sources.append(_source_label(measurement_source or "withings"))
     if blood_pressure_records:
-        sources.append("Vitalsync")
+        sources.append(_source_label(blood_pressure_source or "vitalsync"))
     return ", ".join(sources) if sources else "None"
 
 
 def _terminal_data_coverage_rows(
     activities: list[NormalizedActivity],
-    withings_steps: int | None,
+    steps: int | None,
     measures: list[dict[str, str]],
     blood_pressure_records: list[dict[str, str]],
     training_load: TrainingLoadMetrics | None,
@@ -1793,7 +2131,7 @@ def _terminal_data_coverage_rows(
 ) -> list[tuple[str, str]]:
     rows = [
         ("Workout source", _activity_sources(activities)),
-        ("Step source", "Withings" if withings_steps is not None else "None"),
+        ("Step source", "Steps" if steps is not None else "None"),
         ("Body source", _body_source_label(measures, blood_pressure_records)),
         ("Sleep source", _sleep_source_label(sleep)),
         ("Activity count", f"{len(activities)} primary"),
@@ -1809,7 +2147,7 @@ def _terminal_data_coverage_rows(
         (
             "Missing data",
             _missing_data_summary(
-                withings_steps,
+                steps,
                 measures,
                 activities,
                 sleep,
@@ -1884,7 +2222,7 @@ def _date_from_value(value: str) -> date | None:
         return None
 
 
-def _withings_step_count(activity_summaries: list[dict[str, str]]) -> int | None:
+def _step_count(activity_summaries: list[dict[str, str]]) -> int | None:
     values = [
         _optional_int_value(activity.get("step_count", ""))
         for activity in activity_summaries
@@ -2550,7 +2888,7 @@ def _ai_handoff(
     *,
     activities: list[NormalizedActivity],
     total_duration_min: float,
-    withings_steps_text: str,
+    steps_text: str,
     walking_distance_km: float,
     swimming_duration_min: float,
     swimming_distance_km: float,
@@ -2578,7 +2916,7 @@ def _ai_handoff(
         activity_sentence = (
             f"Recorded {len(activities)} {_pluralize(len(activities), 'primary activity', 'primary activities')}"
             f"{walking_part}, {total_duration_min:.0f} min moving time, "
-            f"and {withings_steps_text} Withings steps."
+            f"and {steps_text} steps."
         )
     swimming_parts: list[str] = []
     if swimming_duration_min > 0:

@@ -22,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         default=None,
         type=Path,
-        help="Path to config file. Defaults to XDG_CONFIG_HOME/ingest.toml.",
+        help="Path to config file. Defaults to XDG_CONFIG_HOME/ingest/config.toml.",
     )
 
     subparsers = parser.add_subparsers(dest="source", required=True)
