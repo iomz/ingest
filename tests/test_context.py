@@ -193,6 +193,28 @@ class ContextTest(unittest.TestCase):
         self.assertTrue(all(len(line) <= 88 for line in handoff_lines))
         self.assertNotIn("\x1b[", output.getvalue())
 
+    def test_explicit_load_source_does_not_backfill_empty_load_activities(self) -> None:
+        activity = normalize_withings_activity(
+            {
+                "source_id": "walk",
+                "start_time": "2026-05-29T08:00:00",
+                "duration_min": "30.00",
+                "activity_type": "walk",
+                "raw_type": "walk",
+                "name": "Outdoor Walk",
+            }
+        )
+
+        state = DailyState(
+            target_date=date(2026, 5, 29),
+            activities=[activity],
+            historical_activities=[activity],
+            load_source="suunto",
+        )
+
+        self.assertEqual(state.load_activities, [])
+        self.assertEqual(state.historical_load_activities, [])
+
     def test_terminal_value_styles_semantic_states(self) -> None:
         cases = [
             ("12.3 km", "12.3 km", "bright_cyan", None),
@@ -1284,9 +1306,9 @@ class ContextTest(unittest.TestCase):
             written = generate_daily_context(config, date(2026, 6, 25))
             content = written.read_text(encoding="utf-8")
 
-            self.assertIn("| Sleep | 6h30m · 23:00–06:30 |", content)
+            self.assertIn("| Sleep | 6h30m · 23:00–06:30 |", content)  # noqa: RUF001
             self.assertIn("- Recovery: Vitalsync", content)
-            self.assertIn("Sleep: 6h30m, 23:00–06:30, source Vitalsync.", content)
+            self.assertIn("Sleep: 6h30m, 23:00–06:30, source Vitalsync.", content)  # noqa: RUF001
 
     def test_invalid_context_source_warns_and_skips_metric(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1359,7 +1381,7 @@ class ContextTest(unittest.TestCase):
             written = generate_daily_context(config, date(2026, 6, 25))
             content = written.read_text(encoding="utf-8")
 
-            self.assertIn("| Sleep | 6h30m · 23:00–06:30 |", content)
+            self.assertIn("| Sleep | 6h30m · 23:00–06:30 |", content)  # noqa: RUF001
             self.assertIn("- Recovery: Vitalsync", content)
             self.assertNotIn("8h00m", content)
 

@@ -234,10 +234,25 @@ class WithingsTest(unittest.TestCase):
 
     def test_parses_authorization_code_from_redirect_url_or_raw_code(self) -> None:
         self.assertEqual(
-            parse_authorization_code("https://callback.example/withings?state=x&code=abc123"),
+            parse_authorization_code("https://callback.example/withings?state=x&code=abc123", expected_state="x"),
             "abc123",
         )
         self.assertEqual(parse_authorization_code("abc123"), "abc123")
+
+    def test_rejects_raw_authorization_code_when_state_expected(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "full Withings redirect URL"):
+            parse_authorization_code("abc123", expected_state="expected")
+
+    def test_rejects_authorization_code_with_mismatched_state(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "state mismatch"):
+            parse_authorization_code(
+                "https://callback.example/withings?state=wrong&code=abc123",
+                expected_state="expected",
+            )
+
+    def test_rejects_redirect_url_without_authorization_code(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "missing authorization code"):
+            parse_authorization_code("https://callback.example/withings?state=expected", expected_state="expected")
 
     def test_normalizes_workouts(self) -> None:
         rows = normalize_workouts(

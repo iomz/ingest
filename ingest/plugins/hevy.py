@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import os
 import re
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import typer
+
+from ingest import prompts
 from ingest.app_data import write_csv_file
 from ingest.config import AppConfig
+from ingest.plugins.contract import PluginCliRegistry, PluginManifest
 
 WORKOUT_FIELDS = [
     "source",
@@ -51,10 +56,51 @@ LOGIN_EMAIL_SELECTOR = (
 LOGIN_PASSWORD_SELECTOR = 'input[label="Password"], input[type="password"], input[name*="password" i]'
 LOGIN_SUBMIT_SELECTOR = 'button[type="submit"]'
 
-
 def sync(config: AppConfig) -> list[Path]:
     export_path = export_workouts_csv(config)
     return import_workouts_csv(config, export_path)
+
+
+def register_cli(registry: PluginCliRegistry) -> None:
+    @registry.sync_app.command("hevy")
+    def sync_hevy(ctx: typer.Context) -> None:
+        registry.print_paths(registry.run_sync(registry.get_config(ctx), "hevy"))
+
+    @registry.import_app.command("hevy")
+    def import_hevy(
+        ctx: typer.Context,
+        csv: Path = typer.Option(..., "--csv", help="Path to Hevy workout CSV export."),
+    ) -> None:
+        registry.print_paths(import_workouts_csv(registry.get_config(ctx), csv))
+
+    @registry.auth_app.command("hevy")
+    def auth_hevy(ctx: typer.Context) -> None:
+        config = registry.get_config(ctx)
+        email = prompts.text("Hevy email or username")
+        password = prompts.password("Hevy password")
+        authenticate(config, email=email, password=password)
+        print(f"Hevy browser session ready: {config.hevy.browser_dir}")
+
+
+def sync_unavailable_reason(config: AppConfig) -> str:
+    if not config.hevy.configured:
+        return "missing [plugin.hevy] config table"
+    return ""
+
+
+manifest = PluginManifest(
+    name="hevy",
+    provides=(
+        "activity.strength.exercise",
+        "activity.strength.set_type",
+        "activity.strength.workout_name",
+        "activity.strength.reps",
+        "activity.strength.volume_kg",
+    ),
+    sync=sync,
+    sync_unavailable_reason=sync_unavailable_reason,
+    register_cli=register_cli,
+)
 
 
 def import_workouts_csv(config: AppConfig, csv_path: Path) -> list[Path]:
@@ -69,13 +115,13 @@ def import_workouts_csv(config: AppConfig, csv_path: Path) -> list[Path]:
 
 def export_workouts_csv(config: AppConfig) -> Path:
     config.hevy.raw_dir.mkdir(parents=True, exist_ok=True)
-    config.hevy.browser_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_private_browser_dir(config.hevy.browser_dir)
     target_path = config.hevy.raw_dir / "workouts_export.csv"
     return asyncio.run(_export_workouts_csv(config, target_path))
 
 
 def authenticate(config: AppConfig, *, email: str, password: str) -> None:
-    config.hevy.browser_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_private_browser_dir(config.hevy.browser_dir)
     asyncio.run(_authenticate(config, email=email, password=password))
 
 
@@ -100,6 +146,7 @@ async def _authenticate(config: AppConfig, *, email: str, password: str) -> None
 
 
 async def _export_workouts_csv(config: AppConfig, target_path: Path) -> Path:
+    _ensure_private_browser_dir(config.hevy.browser_dir)
     async_playwright = _async_playwright()
     async with async_playwright() as playwright:
         context = await playwright.chromium.launch_persistent_context(
@@ -119,6 +166,11 @@ async def _export_workouts_csv(config: AppConfig, target_path: Path) -> Path:
             await context.close()
 
     return target_path
+
+
+def _ensure_private_browser_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
 
 
 def read_export_rows(path: Path) -> list[dict[str, str]]:

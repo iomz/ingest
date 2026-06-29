@@ -9,8 +9,12 @@ from typing import Any
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
+import typer
+
+from ingest import prompts
 from ingest.app_data import write_csv_file, write_json_file
 from ingest.config import AppConfig, VitalsyncConfig, update_vitalsync_tokens
+from ingest.plugins.contract import PluginCliRegistry, PluginManifest
 from ingest.plugins.withings import SLEEP_FIELDS, merge_sleep_rows
 
 TIMEOUT_SECONDS = 30
@@ -59,6 +63,66 @@ def sync(config: AppConfig, *, end_date: date | None = None) -> list[Path]:
     if start_date > target_end_date:
         return []
     return sync_range(config, start_date, target_end_date, raw_name="sleep_analysis_sync.json")
+
+
+def register_cli(registry: PluginCliRegistry) -> None:
+    vitalsync_auth_app = typer.Typer(help="Vitalsync token helpers.")
+
+    @registry.sync_app.command("vitalsync")
+    def sync_vitalsync(ctx: typer.Context) -> None:
+        registry.print_paths(registry.run_sync(registry.get_config(ctx), "vitalsync"))
+
+    @vitalsync_auth_app.command("register-client")
+    def auth_vitalsync_register_client(
+        ctx: typer.Context,
+        pairing_token: str | None = typer.Option(None, "--pairing-token", help="One-time Vitalsync pairing token."),
+        client_label: str = typer.Option("ingest", "--client-label", help="Label stored by the Vitalsync receiver."),
+    ) -> None:
+        config = registry.get_config(ctx)
+        resolved_pairing_token = pairing_token or prompts.password("Vitalsync pairing token")
+        resolved_client_label = client_label or prompts.text("Vitalsync client label", default="ingest")
+        register_client(
+            config,
+            pairing_token=resolved_pairing_token,
+            client_label=resolved_client_label,
+        )
+        print(config.vitalsync.auth_state_path)
+
+    @vitalsync_auth_app.command("refresh-token")
+    def auth_vitalsync_refresh_token(ctx: typer.Context) -> None:
+        config = registry.get_config(ctx)
+        refresh_configured_access_token(config)
+        print(config.vitalsync.auth_state_path)
+
+    registry.auth_app.add_typer(vitalsync_auth_app, name="vitalsync")
+
+
+def sync_unavailable_reason(config: AppConfig) -> str:
+    if config.vitalsync.access_token:
+        return ""
+    if config.vitalsync.refresh_token and config.vitalsync.client_id:
+        return ""
+    return f"run `ingest auth vitalsync register-client`; missing auth state at {config.vitalsync.auth_state_path}"
+
+
+manifest = PluginManifest(
+    name="vitalsync",
+    provides=(
+        "recovery.sleep.start_time",
+        "recovery.sleep.end_time",
+        "recovery.sleep.time_in_bed_min",
+        "recovery.sleep.awake_min",
+        "recovery.sleep.deep_sleep_min",
+        "recovery.sleep.rem_sleep_min",
+        "measurement.steps",
+        "measurement.blood_pressure.systolic_mmHg",
+        "measurement.blood_pressure.diastolic_mmHg",
+    ),
+    sync=sync,
+    sync_unavailable_reason=sync_unavailable_reason,
+    register_cli=register_cli,
+    serial_sync=True,
+)
 
 
 def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name: str) -> list[Path]:

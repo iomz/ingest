@@ -12,8 +12,23 @@ from unittest import mock
 
 import anyio
 
-from ingest.cli import _sync_all_async, build_parser, main
+from ingest.cli import _sync_all_async, app, main
+from typer.testing import CliRunner
 from ingest.config import load_config
+from ingest.plugins import PluginManifest
+from ingest.plugins import hevy, suunto, vitalsync, withings
+
+
+@contextlib.contextmanager
+def patch_manifest_sync(plugin_module: object, **mock_kwargs: object):
+    sync_mock = mock.Mock(**mock_kwargs)
+    manifest = plugin_module.manifest
+    original_sync = manifest.sync
+    object.__setattr__(manifest, "sync", sync_mock)
+    try:
+        yield sync_mock
+    finally:
+        object.__setattr__(manifest, "sync", original_sync)
 
 
 def write_auth_state(data_dir: Path, plugin: str, state: dict[str, object]) -> None:
@@ -23,83 +38,42 @@ def write_auth_state(data_dir: Path, plugin: str, state: dict[str, object]) -> N
 
 
 class CliTest(unittest.TestCase):
-    def test_parser_accepts_new_sync_and_backfill_commands(self) -> None:
-        parser = build_parser()
+    def test_parser_accepts_new_sync_commands(self) -> None:
+        runner = CliRunner()
+        help_paths = [
+            ["today", "--help"],
+            ["day", "--help"],
+            ["yesterday", "--help"],
+            ["sync", "hevy", "--help"],
+            ["sync", "suunto", "--help"],
+            ["sync", "vitalsync", "--help"],
+            ["sync", "withings", "--help"],
+            ["sync", "all", "--help"],
+            ["import", "hevy", "--help"],
+            ["auth", "withings", "--help"],
+            ["auth", "withings", "auth-url", "--help"],
+            ["auth", "hevy", "--help"],
+            ["auth", "vitalsync", "register-client", "--help"],
+            ["auth", "vitalsync", "refresh-token", "--help"],
+        ]
 
-        today_args = parser.parse_args(["today"])
-        today_sync_args = parser.parse_args(["today", "--sync"])
-        today_markdown_args = parser.parse_args(["today", "--markdown"])
-        day_args = parser.parse_args(["day", "2026-06-02"])
-        day_sync_args = parser.parse_args(["day", "2026-06-02", "--sync"])
-        day_markdown_args = parser.parse_args(["day", "2026-06-02", "--markdown"])
-        yesterday_args = parser.parse_args(["yesterday"])
-        yesterday_markdown_args = parser.parse_args(["yesterday", "--markdown"])
-        sync_hevy_args = parser.parse_args(["sync", "hevy"])
-        sync_suunto_args = parser.parse_args(["sync", "suunto"])
-        sync_vitalsync_args = parser.parse_args(["sync", "vitalsync"])
-        sync_withings_args = parser.parse_args(["sync", "withings"])
-        sync_all_args = parser.parse_args(["sync", "all"])
-        import_args = parser.parse_args(["import", "hevy", "--csv", "hevy.csv"])
-        backfill_args = parser.parse_args(["backfill", "withings", "--from", "2026-01-01"])
-        auth_args = parser.parse_args(["auth", "withings", "auth-url", "--redirect-uri", "https://callback.example"])
-        withings_auth_args = parser.parse_args(["auth", "withings"])
-        hevy_auth_args = parser.parse_args(["auth", "hevy"])
-        vitalsync_register_args = parser.parse_args(["auth", "vitalsync", "register-client", "--pairing-token", "pair"])
-        vitalsync_refresh_args = parser.parse_args(["auth", "vitalsync", "refresh-token"])
+        for args in help_paths:
+            with self.subTest(args=args):
+                result = runner.invoke(app, args)
+                self.assertEqual(result.exit_code, 0, result.output)
 
-        self.assertEqual(today_args.source, "today")
-        self.assertFalse(today_args.sync)
-        self.assertFalse(today_args.markdown)
-        self.assertTrue(today_sync_args.sync)
-        self.assertTrue(today_markdown_args.markdown)
-        self.assertEqual(day_args.source, "day")
-        self.assertFalse(day_args.markdown)
-        self.assertEqual(day_args.target_date.isoformat(), "2026-06-02")
-        self.assertTrue(day_sync_args.sync)
-        self.assertTrue(day_markdown_args.markdown)
-        self.assertEqual(yesterday_args.source, "yesterday")
-        self.assertFalse(yesterday_args.markdown)
-        self.assertTrue(yesterday_markdown_args.markdown)
-        self.assertEqual(sync_hevy_args.source, "sync")
-        self.assertEqual(sync_hevy_args.command, "hevy")
-        self.assertEqual(sync_suunto_args.command, "suunto")
-        self.assertEqual(sync_vitalsync_args.command, "vitalsync")
-        self.assertEqual(sync_withings_args.source, "sync")
-        self.assertEqual(sync_withings_args.command, "withings")
-        self.assertEqual(sync_all_args.source, "sync")
-        self.assertEqual(sync_all_args.command, "all")
-        self.assertEqual(import_args.source, "import")
-        self.assertEqual(import_args.command, "hevy")
-        self.assertEqual(import_args.csv, Path("hevy.csv"))
-        self.assertEqual(backfill_args.source, "backfill")
-        self.assertEqual(backfill_args.command, "withings")
-        self.assertEqual(backfill_args.from_date.isoformat(), "2026-01-01")
-        self.assertEqual(auth_args.source, "auth")
-        self.assertEqual(auth_args.service, "withings")
-        self.assertEqual(auth_args.command, "auth-url")
-        self.assertEqual(withings_auth_args.source, "auth")
-        self.assertEqual(withings_auth_args.service, "withings")
-        self.assertIsNone(withings_auth_args.command)
-        self.assertEqual(hevy_auth_args.source, "auth")
-        self.assertEqual(hevy_auth_args.service, "hevy")
-        self.assertEqual(vitalsync_register_args.service, "vitalsync")
-        self.assertEqual(vitalsync_register_args.command, "register-client")
-        self.assertEqual(vitalsync_register_args.pairing_token, "pair")
-        self.assertEqual(vitalsync_register_args.client_label, "ingest")
-        self.assertEqual(vitalsync_refresh_args.service, "vitalsync")
-        self.assertEqual(vitalsync_refresh_args.command, "refresh-token")
+        self.assertIn("--backfill-since", runner.invoke(app, ["sync", "withings", "--help"]).output)
 
     def test_parser_rejects_removed_alias_commands(self) -> None:
-        parser = build_parser()
+        runner = CliRunner()
 
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["context", "today"])
+        self.assertNotEqual(runner.invoke(app, ["context", "today"]).exit_code, 0)
 
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["withings", "sync"])
+        self.assertNotEqual(runner.invoke(app, ["withings", "sync"]).exit_code, 0)
 
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["oauth", "withings", "auth-url"])
+        self.assertNotEqual(runner.invoke(app, ["oauth", "withings", "auth-url"]).exit_code, 0)
+
+        self.assertNotEqual(runner.invoke(app, ["backfill", "withings", "--from", "2026-01-01"]).exit_code, 0)
 
     def test_auth_withings_auth_url_prints_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -140,16 +114,17 @@ class CliTest(unittest.TestCase):
             with (
                 contextlib.redirect_stdout(stdout),
                 mock.patch(
-                    "ingest.cli.prompts.text",
+                    "ingest.plugins.withings.prompts.text",
                     side_effect=["client", "http://127.0.0.1:8000/callback"],
                 ) as text_prompt,
-                mock.patch("ingest.cli.prompts.password", return_value="secret") as password_prompt,
-                mock.patch("ingest.cli.prompts.confirm", return_value=True) as confirm_prompt,
+                mock.patch("ingest.plugins.withings.prompts.password", return_value="secret") as password_prompt,
+                mock.patch("ingest.plugins.withings.prompts.confirm", return_value=True) as confirm_prompt,
                 mock.patch(
-                    "ingest.cli.withings.authorization_url", return_value="https://withings.example/auth"
+                    "ingest.plugins.withings.authorization_url", return_value="https://withings.example/auth"
                 ) as auth_url,
-                mock.patch("ingest.cli.withings.capture_local_oauth_code", return_value="code") as capture_code,
-                mock.patch("ingest.cli.withings.exchange_authorization_code") as exchange_code,
+                mock.patch("ingest.plugins.withings.capture_local_oauth_code", return_value="code") as capture_code,
+                mock.patch("ingest.plugins.withings.exchange_authorization_code") as exchange_code,
+                mock.patch("ingest.plugins.withings.secrets.token_urlsafe", return_value="state"),
             ):
                 exit_code = main(["--config", str(config_path), "auth", "withings"])
 
@@ -158,9 +133,12 @@ class CliTest(unittest.TestCase):
             password_prompt.assert_called_once_with("Withings client secret")
             confirm_prompt.assert_called_once()
             auth_url.assert_called_once()
+            _config_arg, auth_kwargs = auth_url.call_args
+            self.assertEqual(auth_kwargs["state"], "state")
             capture_code.assert_called_once_with(
                 "https://withings.example/auth",
                 "http://127.0.0.1:8000/callback",
+                expected_state="state",
                 timeout_seconds=300,
             )
             exchange_code.assert_called_once()
@@ -186,16 +164,17 @@ class CliTest(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "ingest.cli.prompts.text",
+                    "ingest.plugins.withings.prompts.text",
                     side_effect=[
                         "client",
                         "https://callback.example/withings",
-                        "https://callback.example/withings?code=code",
+                        "https://callback.example/withings?state=state&code=code",
                     ],
                 ),
-                mock.patch("ingest.cli.prompts.password", return_value="secret"),
-                mock.patch("ingest.cli.withings.authorization_url", return_value="https://withings.example/auth"),
-                mock.patch("ingest.cli.withings.exchange_authorization_code") as exchange_code,
+                mock.patch("ingest.plugins.withings.prompts.password", return_value="secret"),
+                mock.patch("ingest.plugins.withings.authorization_url", return_value="https://withings.example/auth"),
+                mock.patch("ingest.plugins.withings.exchange_authorization_code") as exchange_code,
+                mock.patch("ingest.plugins.withings.secrets.token_urlsafe", return_value="state"),
             ):
                 exit_code = main(["--config", str(config_path), "auth", "withings"])
 
@@ -213,9 +192,9 @@ class CliTest(unittest.TestCase):
             stdout = io.StringIO()
             with (
                 contextlib.redirect_stdout(stdout),
-                mock.patch("ingest.cli.prompts.text", return_value="iori@example.com") as text_prompt,
-                mock.patch("ingest.cli.prompts.password", return_value="secret") as password_prompt,
-                mock.patch("ingest.cli.hevy.authenticate") as authenticate,
+                mock.patch("ingest.plugins.hevy.prompts.text", return_value="iori@example.com") as text_prompt,
+                mock.patch("ingest.plugins.hevy.prompts.password", return_value="secret") as password_prompt,
+                mock.patch("ingest.plugins.hevy.authenticate") as authenticate,
             ):
                 exit_code = main(["--config", str(config_path), "auth", "hevy"])
 
@@ -240,7 +219,7 @@ class CliTest(unittest.TestCase):
             stdout = io.StringIO()
             with (
                 contextlib.redirect_stdout(stdout),
-                mock.patch("ingest.cli.vitalsync.register_client") as register_client,
+                mock.patch("ingest.plugins.vitalsync.register_client") as register_client,
             ):
                 exit_code = main(
                     [
@@ -274,7 +253,7 @@ class CliTest(unittest.TestCase):
             stdout = io.StringIO()
             with (
                 contextlib.redirect_stdout(stdout),
-                mock.patch("ingest.cli.vitalsync.refresh_configured_access_token") as refresh_token,
+                mock.patch("ingest.plugins.vitalsync.refresh_configured_access_token") as refresh_token,
             ):
                 exit_code = main(
                     [
@@ -329,7 +308,7 @@ class CliTest(unittest.TestCase):
 
             stdout = io.StringIO()
             with (
-                mock.patch("ingest.cli.withings.sync") as withings_sync,
+                patch_manifest_sync(withings) as withings_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(
@@ -362,7 +341,7 @@ class CliTest(unittest.TestCase):
 
             stdout = io.StringIO()
             with (
-                mock.patch("ingest.cli.withings.sync") as withings_sync,
+                patch_manifest_sync(withings) as withings_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(
@@ -414,7 +393,7 @@ class CliTest(unittest.TestCase):
 
             stdout = io.StringIO()
             with (
-                mock.patch("ingest.cli.withings.sync") as withings_sync,
+                patch_manifest_sync(withings) as withings_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "day", "2026-05-29"])
@@ -482,14 +461,20 @@ class CliTest(unittest.TestCase):
             )
 
             stdout = io.StringIO()
+            manifest = PluginManifest(
+                name="hevy",
+                provides=("activity.strength.workout_name",),
+                sync=mock.Mock(return_value=[output_path]),
+            )
             with (
-                mock.patch("ingest.cli.hevy.sync", return_value=[output_path]) as hevy_sync,
+                mock.patch("ingest.cli.load_plugin", return_value=manifest) as load_plugin,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "hevy"])
 
             self.assertEqual(exit_code, 0)
-            hevy_sync.assert_called_once()
+            load_plugin.assert_has_calls([mock.call("hevy"), mock.call("hevy")])
+            manifest.sync.assert_called_once()
             self.assertEqual(stdout.getvalue(), f"{output_path}\n")
 
     def test_sync_all_includes_hevy(self) -> None:
@@ -514,10 +499,10 @@ class CliTest(unittest.TestCase):
 
             stdout = io.StringIO()
             with (
-                mock.patch("ingest.cli.withings.sync", return_value=[withings_path]) as withings_sync,
-                mock.patch("ingest.cli.hevy.sync", return_value=[hevy_path]) as hevy_sync,
-                mock.patch("ingest.cli.suunto.sync_async", new=mock.AsyncMock()) as suunto_sync,
-                mock.patch("ingest.cli.vitalsync.sync") as vitalsync_sync,
+                patch_manifest_sync(withings, return_value=[withings_path]) as withings_sync,
+                patch_manifest_sync(hevy, return_value=[hevy_path]) as hevy_sync,
+                patch_manifest_sync(suunto) as suunto_sync,
+                patch_manifest_sync(vitalsync) as vitalsync_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "all"])
@@ -525,7 +510,7 @@ class CliTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             withings_sync.assert_called_once()
             hevy_sync.assert_called_once()
-            suunto_sync.assert_not_awaited()
+            suunto_sync.assert_not_called()
             vitalsync_sync.assert_not_called()
             self.assertEqual(stdout.getvalue(), f"{hevy_path}\n{withings_path}\n")
 
@@ -551,18 +536,15 @@ class CliTest(unittest.TestCase):
 
             stdout = io.StringIO()
             with (
-                mock.patch("ingest.cli.withings.sync", return_value=[withings_path]),
-                mock.patch("ingest.cli.hevy.sync", return_value=[hevy_path]),
-                mock.patch(
-                    "ingest.cli.suunto.sync_async",
-                    new=mock.AsyncMock(return_value=[suunto_path]),
-                ) as suunto_sync,
+                patch_manifest_sync(withings, return_value=[withings_path]),
+                patch_manifest_sync(hevy, return_value=[hevy_path]),
+                patch_manifest_sync(suunto, return_value=[suunto_path]) as suunto_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "all"])
 
             self.assertEqual(exit_code, 0)
-            suunto_sync.assert_awaited_once()
+            suunto_sync.assert_called_once()
             self.assertEqual(stdout.getvalue(), f"{hevy_path}\n{suunto_path}\n{withings_path}\n")
 
     def test_sync_all_includes_enabled_vitalsync(self) -> None:
@@ -588,9 +570,9 @@ class CliTest(unittest.TestCase):
 
             stdout = io.StringIO()
             with (
-                mock.patch("ingest.cli.withings.sync", return_value=[withings_path]),
-                mock.patch("ingest.cli.hevy.sync", return_value=[hevy_path]),
-                mock.patch("ingest.cli.vitalsync.sync", return_value=[vitalsync_path]) as vitalsync_sync,
+                patch_manifest_sync(withings, return_value=[withings_path]),
+                patch_manifest_sync(hevy, return_value=[hevy_path]),
+                patch_manifest_sync(vitalsync, return_value=[vitalsync_path]) as vitalsync_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "all"])
@@ -632,9 +614,9 @@ class CliTest(unittest.TestCase):
                 return []
 
             with (
-                mock.patch("ingest.cli.withings.sync", side_effect=lambda _config: sync_source("withings")),
-                mock.patch("ingest.cli.hevy.sync", return_value=[]),
-                mock.patch("ingest.cli.vitalsync.sync", side_effect=lambda _config: sync_source("vitalsync")),
+                patch_manifest_sync(withings, side_effect=lambda _config: sync_source("withings")),
+                patch_manifest_sync(hevy, return_value=[]),
+                patch_manifest_sync(vitalsync, side_effect=lambda _config: sync_source("vitalsync")),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "all"])
 
@@ -665,8 +647,8 @@ data_dir = "{data_dir}"
                 return []
 
             with (
-                mock.patch("ingest.cli.withings.sync", side_effect=sync_source),
-                mock.patch("ingest.cli.hevy.sync", side_effect=sync_source),
+                patch_manifest_sync(withings, side_effect=sync_source),
+                patch_manifest_sync(hevy, side_effect=sync_source),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "all"])
 
@@ -679,7 +661,7 @@ data_dir = "{data_dir}"
             stderr = io.StringIO()
 
             with (
-                mock.patch("ingest.cli.hevy.sync", return_value=[]) as hevy_sync,
+                patch_manifest_sync(hevy, return_value=[]) as hevy_sync,
                 contextlib.redirect_stderr(stderr),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "hevy"])
@@ -695,7 +677,7 @@ data_dir = "{data_dir}"
             stderr = io.StringIO()
 
             with (
-                mock.patch("ingest.cli.hevy.sync", return_value=[]) as hevy_sync,
+                patch_manifest_sync(hevy, return_value=[]) as hevy_sync,
                 contextlib.redirect_stderr(stderr),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "hevy"])
@@ -715,13 +697,49 @@ data_dir = "{data_dir}"
             stdout = io.StringIO()
 
             with (
-                mock.patch("ingest.cli.withings.sync", return_value=[output_path]) as withings_sync,
+                patch_manifest_sync(withings, return_value=[output_path]) as withings_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "withings"])
 
             self.assertEqual(exit_code, 0)
             withings_sync.assert_called_once()
+            self.assertEqual(stdout.getvalue(), f"{output_path}\n")
+
+    def test_sync_withings_backfill_since_runs_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            output_path = data_dir / "withings/body_measures.csv"
+            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            write_auth_state(data_dir, "withings", {"access_token": "access"})
+            stdout = io.StringIO()
+
+            with (
+                patch_manifest_sync(withings) as withings_sync,
+                mock.patch("ingest.plugins.withings.backfill", return_value=[output_path]) as backfill,
+                contextlib.redirect_stdout(stdout),
+            ):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "sync",
+                        "withings",
+                        "--backfill-since",
+                        "2026-01-01",
+                        "--end-date",
+                        "2026-01-31",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            withings_sync.assert_not_called()
+            backfill.assert_called_once()
+            _config_arg, kwargs = backfill.call_args
+            self.assertEqual(kwargs["start_date"].isoformat(), "2026-01-01")
+            self.assertEqual(kwargs["end_date"].isoformat(), "2026-01-31")
             self.assertEqual(stdout.getvalue(), f"{output_path}\n")
 
     def test_sync_all_does_not_swallow_base_exceptions(self) -> None:
@@ -738,12 +756,9 @@ data_dir = "{data_dir}"
             config = load_config(config_path)
 
             with (
-                mock.patch("ingest.cli.withings.sync", return_value=[]),
-                mock.patch("ingest.cli.hevy.sync", return_value=[]),
-                mock.patch(
-                    "ingest.cli.suunto.sync_async",
-                    new=mock.AsyncMock(side_effect=CancellationSignal),
-                ),
+                patch_manifest_sync(withings, return_value=[]),
+                patch_manifest_sync(hevy, return_value=[]),
+                patch_manifest_sync(suunto, side_effect=CancellationSignal),
             ):
                 with self.assertRaises(BaseExceptionGroup) as raised:
                     anyio.run(_sync_all_async, config)
@@ -775,8 +790,8 @@ data_dir = "{data_dir}"
                     "ingest.cli._local_today",
                     return_value=__import__("datetime").date(2026, 5, 29),
                 ),
-                mock.patch("ingest.cli.withings.sync", return_value=[withings_path]) as withings_sync,
-                mock.patch("ingest.cli.hevy.sync", return_value=[hevy_path]) as hevy_sync,
+                patch_manifest_sync(withings, return_value=[withings_path]) as withings_sync,
+                patch_manifest_sync(hevy, return_value=[hevy_path]) as hevy_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "today", "--sync"])
@@ -824,7 +839,7 @@ data_dir = "{data_dir}"
                     "ingest.cli._local_today",
                     return_value=__import__("datetime").date(2026, 6, 3),
                 ),
-                mock.patch("ingest.cli.withings.sync") as withings_sync,
+                patch_manifest_sync(withings) as withings_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "yesterday"])
@@ -873,7 +888,7 @@ data_dir = "{data_dir}"
                     "ingest.cli._local_today",
                     return_value=__import__("datetime").date(2026, 5, 29),
                 ),
-                mock.patch("ingest.cli.withings.sync") as withings_sync,
+                patch_manifest_sync(withings) as withings_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "today"])
@@ -916,7 +931,7 @@ data_dir = "{data_dir}"
                     "ingest.cli._local_today",
                     return_value=__import__("datetime").date(2026, 5, 29),
                 ),
-                mock.patch("ingest.cli.withings.sync") as withings_sync,
+                patch_manifest_sync(withings) as withings_sync,
                 contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "today", "--markdown"])

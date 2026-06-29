@@ -62,9 +62,9 @@ class DailyState:
                 "historical_step_records",
                 self.historical_withings_activity_summaries,
             )
-        if not self.load_activities:
+        if not self.load_source and not self.load_activities:
             object.__setattr__(self, "load_activities", self.activities)
-        if not self.historical_load_activities:
+        if not self.load_source and not self.historical_load_activities:
             object.__setattr__(
                 self,
                 "historical_load_activities",

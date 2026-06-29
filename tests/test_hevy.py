@@ -45,6 +45,14 @@ class HevySourceTest(unittest.TestCase):
 
         self.assertEqual(rows, [])
 
+    def test_ensures_private_browser_profile_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            browser_dir = Path(temp_dir) / "hevy/browser"
+
+            hevy._ensure_private_browser_dir(browser_dir)
+
+            self.assertEqual(browser_dir.stat().st_mode & 0o777, 0o700)
+
     def test_parses_current_hevy_export_timestamps(self) -> None:
         rows = hevy.normalize_workout_rows(
             [
