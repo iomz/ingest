@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import tempfile
 import unittest
 from datetime import date
@@ -11,6 +12,12 @@ from zoneinfo import ZoneInfo
 
 from ingest.config import load_config
 from ingest.plugins import vitalsync
+
+
+def write_auth_state(data_dir: Path, state: dict[str, object]) -> None:
+    path = data_dir / "vitalsync/auth.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state), encoding="utf-8")
 
 
 class FakeResponse:
@@ -183,10 +190,10 @@ timezone = "Asia/Tokyo"
 
 [plugin.vitalsync]
 enabled = true
-access_token = "access"
 """.strip(),
                 encoding="utf-8",
             )
+            write_auth_state(data_dir, {"access_token": "access"})
             config = load_config(config_path)
             session = FakeSession()
 
@@ -228,10 +235,10 @@ timezone = "Asia/Tokyo"
 
 [plugin.vitalsync]
 enabled = true
-access_token = "access"
 """.strip(),
                 encoding="utf-8",
             )
+            write_auth_state(data_dir, {"access_token": "access"})
             config = load_config(config_path)
             session = FakeSession(
                 get_responses=[
@@ -275,12 +282,17 @@ timezone = "Asia/Tokyo"
 
 [plugin.vitalsync]
 enabled = true
-client_id = "client"
-refresh_token = "refresh"
-access_token = "revoked-access"
-expires_at = "2099-01-01T00:00:00Z"
 """.strip(),
                 encoding="utf-8",
+            )
+            write_auth_state(
+                data_dir,
+                {
+                    "client_id": "client",
+                    "refresh_token": "refresh",
+                    "access_token": "revoked-access",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                },
             )
             config = load_config(config_path)
             session = FakeSession(
@@ -327,12 +339,12 @@ timezone = "Asia/Tokyo"
 
 [plugin.vitalsync]
 enabled = true
-access_token = "access"
 """.strip(),
                 encoding="utf-8",
             )
+            write_auth_state(data_dir, {"access_token": "access"})
             sleep_csv = data_dir / "vitalsync/sleep.csv"
-            sleep_csv.parent.mkdir(parents=True)
+            sleep_csv.parent.mkdir(parents=True, exist_ok=True)
             sleep_csv.write_text(
                 "\n".join(
                     [
@@ -351,15 +363,20 @@ access_token = "access"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
+            data_dir = root / "app-data"
             config_path.write_text(
-                """
+                f"""
+[app]
+data_dir = "{data_dir}"
+
 [plugin.vitalsync]
-base_url = "https://receiver.example/vitalsync/v1"
-client_id = "client"
-refresh_token = "refresh"
-access_token = "stale-access"
+endpoint = "https://receiver.example/vitalsync/v1"
 """.strip(),
                 encoding="utf-8",
+            )
+            write_auth_state(
+                data_dir,
+                {"client_id": "client", "refresh_token": "refresh", "access_token": "stale-access"},
             )
             config = load_config(config_path)
             session = FakeSession()
@@ -376,10 +393,14 @@ access_token = "stale-access"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
+            data_dir = root / "app-data"
             config_path.write_text(
-                """
+                f"""
+[app]
+data_dir = "{data_dir}"
+
 [plugin.vitalsync]
-base_url = "https://receiver.example/vitalsync/v1"
+endpoint = "https://receiver.example/vitalsync/v1"
 """.strip(),
                 encoding="utf-8",
             )

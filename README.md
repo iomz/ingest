@@ -151,17 +151,17 @@ Hevy import from CSV export:
 ingest import hevy --csv ~/Downloads/hevy-workouts.csv
 ```
 
-The Hevy public API currently requires Hevy Pro. Without Pro, use the app export: Profile > Settings > Export & Import Data > Export Data > Export Workouts. `ingest sync hevy` automates that export with a dedicated Playwright browser profile stored under the application data directory. On the first run, log in to Hevy in the opened browser window, then rerun the command. Optional `plugin.hevy.email` and `plugin.hevy.password` fill the login form automatically; they are stored as plaintext config values, so prefer the persistent browser session when it works.
+The Hevy public API currently requires Hevy Pro. Without Pro, use the app export: Profile > Settings > Export & Import Data > Export Data > Export Workouts. `ingest auth hevy` asks for credentials with interactive prompts, logs in through Playwright, and stores only the browser session under the application data directory. `ingest sync hevy` reuses that browser session and does not read Hevy credentials from config.
 
 Suunto sync uses the user-managed [`suuntool`](https://github.com/tajchert/suuntool) command. Install it and run `suuntool login` separately, then enable `[plugin.suunto]` in the config file. `plugin.suunto.command` accepts an absolute executable path and otherwise defaults to `suuntool` from PATH.
 
-Vitalsync sync fetches Apple Health records from the configured `plugin.vitalsync.base_url`. Enable `[plugin.vitalsync]` and register ingest with a Vitalsync pairing token:
+Vitalsync sync fetches Apple Health records from the configured `plugin.vitalsync.endpoint`. Enable `[plugin.vitalsync]` and register ingest with a Vitalsync pairing token:
 
 ```sh
 ingest auth vitalsync register-client --pairing-token "<PAIRING_TOKEN>" --client-label "ingest"
 ```
 
-This saves `client_id`, `refresh_token`, `access_token`, and `expires_at` to the config file. `ingest sync vitalsync` refreshes the access token automatically when needed. Supported record types are `sleep_analysis`, `blood_pressure`, and `step_count`; sleep is filtered to Sleep Cycle (`com.lexwarelabs.goodmorning`) unless `plugin.vitalsync.source_bundle_id` is set to an empty string. Sync writes sleep, blood-pressure, and step CSV headers even when no matching records are returned, so context generation can distinguish "no rows yet" from "plugin has not synced."
+This saves `client_id`, `refresh_token`, `access_token`, and `expires_at` to `${XDG_DATA_HOME:-~/.local/share}/ingest/vitalsync/auth.json`, not the config file. `ingest sync vitalsync` refreshes the access token automatically when needed. Supported record types are `sleep_analysis`, `blood_pressure`, and `step_count`; sleep is filtered to Sleep Cycle (`com.lexwarelabs.goodmorning`) unless `plugin.vitalsync.source_bundle_id` is set to an empty string. Sync writes sleep, blood-pressure, and step CSV headers even when no matching records are returned, so context generation can distinguish "no rows yet" from "plugin has not synced."
 
 Withings OAuth helpers:
 
@@ -169,6 +169,8 @@ Withings OAuth helpers:
 ingest auth withings auth-url --redirect-uri "https://your-registered-callback"
 ingest auth withings exchange-code --redirect-uri "https://your-registered-callback" --code "<code>"
 ```
+
+Withings client credentials and OAuth tokens are stored in `${XDG_DATA_HOME:-~/.local/share}/ingest/withings/auth.json`, not the config file.
 
 ## Files
 
@@ -193,7 +195,7 @@ mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/ingest"
 cp config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/ingest/config.toml"
 ```
 
-When the default config file is missing, `ingest` creates the config directory and exits with the copy instruction. It does not write a placeholder `config.toml`; the file contains credentials and local source choices, so an explicit copy/edit step keeps first-run setup visible.
+When the default config file is missing, `ingest` creates the config directory and exits with the copy instruction. It does not write a placeholder `config.toml`; the file contains local source choices, so an explicit copy/edit step keeps first-run setup visible.
 
 `app.timezone` defines local report dates and interpretation of source timestamps without an explicit UTC offset. It defaults to `Asia/Tokyo`.
 
@@ -233,11 +235,13 @@ ${XDG_DATA_HOME:-~/.local/share}/ingest/
 │   ├── raw/
 │   └── workouts.csv
 ├── vitalsync/
+│   ├── auth.json
 │   ├── raw/
 │   ├── sleep.csv
 │   ├── steps.csv
 │   └── blood_pressure.csv
 ├── withings/
+│   ├── auth.json
 │   ├── raw/
 │   ├── body_measures.csv
 │   └── workouts.csv

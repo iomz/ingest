@@ -43,9 +43,6 @@ sets_csv = "hevy/sets.csv"
 # Optional. Raw downloaded CSV exports and dedicated browser profile.
 raw_dir = "hevy/raw"
 browser_dir = "hevy/browser"
-# Optional. Stored in plaintext in this config file. Prefer browser profile session when possible.
-email = ""
-password = ""
 login_timeout_seconds = 300
 login_poll_interval_seconds = 2
 
@@ -62,12 +59,7 @@ sync_days = 30
 [plugin.vitalsync]
 enabled = true
 # Optional. Apple Health records synced by the Vitalsync iOS app.
-base_url = "https://receiver.example.com/vitalsync/v1"
-# Fill these with `ingest auth vitalsync register-client --pairing-token "<PAIRING_TOKEN>"`.
-client_id = ""
-refresh_token = ""
-access_token = ""
-expires_at = ""
+endpoint = "https://receiver.example.com/vitalsync/v1"
 # Defaults to Sleep Cycle. Set to "" to include all sleep_analysis sources.
 source_bundle_id = "com.lexwarelabs.goodmorning"
 sleep_csv = "vitalsync/sleep.csv"
@@ -81,13 +73,6 @@ sync_days = 30
 enabled = true
 # Copy this file to your local config path and replace the placeholder values.
 # Store it as ${XDG_CONFIG_HOME:-~/.config}/ingest/config.toml, not in this repository.
-client_id = ""
-client_secret = ""
-refresh_token = ""
-
-# Optional fallback for one-off runs when refresh_token is not configured.
-access_token = ""
-expires_at = 0
 # Optional normalized sleep summary output path.
 sleep_csv = "withings/sleep.csv"
 # Number of days to fetch when no local Withings data exists.

@@ -39,6 +39,12 @@ from ingest.plugins.withings import (
 )
 
 
+def write_auth_state(data_dir: Path, state: dict[str, object]) -> None:
+    path = data_dir / "withings/auth.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+
 class FakeResponse:
     def __init__(self, body: object) -> None:
         self.body = body
@@ -208,17 +214,18 @@ class WithingsTest(unittest.TestCase):
 
     def test_builds_authorization_url_with_activity_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "ingest.toml"
-            config_path.write_text(
-                """
-[plugin.withings]
-client_id = "client-id"
-""".strip(),
-                encoding="utf-8",
-            )
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n\n[plugin.withings]\n', encoding="utf-8")
             config = load_config(config_path)
 
-            url = authorization_url(config, redirect_uri="https://example.test/callback", state="state")
+            url = authorization_url(
+                config,
+                redirect_uri="https://example.test/callback",
+                state="state",
+                client_id="client-id",
+            )
 
             self.assertIn("client_id=client-id", url)
             self.assertIn("scope=user.metrics%2Cuser.activity", url)
@@ -492,7 +499,6 @@ client_id = "client-id"
 data_dir = "{data_dir}"
 
 [plugin.withings]
-access_token = "access"
 """.strip(),
                 encoding="utf-8",
             )
@@ -531,7 +537,6 @@ access_token = "access"
 data_dir = "{data_dir}"
 
 [plugin.withings]
-access_token = "access"
 """.strip(),
                 encoding="utf-8",
             )
@@ -587,7 +592,6 @@ access_token = "access"
 data_dir = "{data_dir}"
 
 [plugin.withings]
-access_token = "access"
 """.strip(),
                 encoding="utf-8",
             )
@@ -813,7 +817,8 @@ access_token = "access"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             data_dir = root / "app-data"
-            config_path = write_config(root, extra='[plugin.withings]\naccess_token = "access"')
+            config_path = write_config(root, extra="[plugin.withings]\n")
+            write_auth_state(data_dir, {"access_token": "access"})
             config = load_config(config_path)
             session = HeightSession()
 
@@ -836,7 +841,8 @@ access_token = "access"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             data_dir = root / "app-data"
-            config_path = write_config(root, extra='[plugin.withings]\naccess_token = "access"')
+            config_path = write_config(root, extra="[plugin.withings]\n")
+            write_auth_state(data_dir, {"access_token": "access"})
             write_withings_csvs(
                 data_dir,
                 measures=["1,2020-01-01,2020-01-01T00:00:00,4,height,1.80,m"],
