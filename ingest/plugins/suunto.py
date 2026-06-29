@@ -93,7 +93,7 @@ async def fetch_workouts(config: SuuntoConfig, since: date) -> list[dict[str, An
     except FileNotFoundError as exc:
         raise SystemExit(
             f"Could not run Suunto sync command {config.command!r}. "
-            "Install and log in to suuntool, or set suunto.command."
+            "Install and log in to suuntool, or set plugin.suunto.command."
         ) from exc
 
     if result.returncode != 0:

@@ -188,13 +188,13 @@ def get_access_token(session: Any, config: AppConfig) -> str:
     if config.withings.access_token:
         return config.withings.access_token
     raise SystemExit(
-        "Missing Withings credentials. Set withings.refresh_token in the config file, "
-        "or set withings.access_token for a one-off run. Client id/secret alone cannot access user data."
+        "Missing Withings credentials. Set plugin.withings.refresh_token in the config file, "
+        "or set plugin.withings.access_token for a one-off run. Client id/secret alone cannot access user data."
     )
 
 
 def authorization_url(config: AppConfig, *, redirect_uri: str, state: str = "ingest") -> str:
-    _require(config.withings.client_id, "withings.client_id")
+    _require(config.withings.client_id, "plugin.withings.client_id")
     return (
         AUTHORIZE_URL
         + "?"
@@ -212,8 +212,8 @@ def authorization_url(config: AppConfig, *, redirect_uri: str, state: str = "ing
 
 def exchange_authorization_code(config: AppConfig, *, code: str, redirect_uri: str) -> None:
     requests = _requests()
-    _require(config.withings.client_id, "withings.client_id")
-    _require(config.withings.client_secret, "withings.client_secret")
+    _require(config.withings.client_id, "plugin.withings.client_id")
+    _require(config.withings.client_secret, "plugin.withings.client_secret")
     with requests.Session() as session:
         response = session.post(
             TOKEN_URL,
@@ -232,9 +232,9 @@ def exchange_authorization_code(config: AppConfig, *, code: str, redirect_uri: s
 
 
 def refresh_access_token(session: Any, config: AppConfig) -> str:
-    _require(config.withings.client_id, "withings.client_id")
-    _require(config.withings.client_secret, "withings.client_secret")
-    _require(config.withings.refresh_token, "withings.refresh_token")
+    _require(config.withings.client_id, "plugin.withings.client_id")
+    _require(config.withings.client_secret, "plugin.withings.client_secret")
+    _require(config.withings.refresh_token, "plugin.withings.refresh_token")
 
     try:
         response = session.post(

@@ -144,7 +144,7 @@ def save_config(config: AppConfig) -> None:
 
 
 def update_withings_tokens(config: AppConfig, token: dict[str, Any]) -> None:
-    withings = config.data.setdefault("withings", {})
+    withings = config.data.setdefault("plugin", {}).setdefault("withings", {})
     withings["access_token"] = _required_token_value(token, "access_token", "Withings")
     refresh_token = str(token.get("refresh_token", "")).strip()
     if refresh_token:
@@ -157,7 +157,7 @@ def update_withings_tokens(config: AppConfig, token: dict[str, Any]) -> None:
 
 
 def update_vitalsync_tokens(config: AppConfig, token: dict[str, Any]) -> None:
-    vitalsync = config.data.setdefault("vitalsync", {})
+    vitalsync = config.data.setdefault("plugin", {}).setdefault("vitalsync", {})
     client_id = str(token.get("client_id", "")).strip()
     refresh_token = str(token.get("refresh_token", "")).strip()
     if client_id:
@@ -233,82 +233,79 @@ def _load_timezone(data: dict[str, Any]) -> ZoneInfo:
 
 
 def _load_withings_config(data: dict[str, Any], data_dir: Path) -> WithingsConfig:
-    withings = data.get("withings", {})
-    sync = _withings_sync_section(data)
+    withings = _plugin_section(data, "withings")
     return WithingsConfig(
         client_id=str(withings.get("client_id", "")).strip(),
         client_secret=str(withings.get("client_secret") or withings.get("secret") or "").strip(),
         refresh_token=str(withings.get("refresh_token", "")).strip(),
         access_token=str(withings.get("access_token", "")).strip(),
-        expires_at=_int_value(withings.get("expires_at", 0), "withings.expires_at"),
+        expires_at=_int_value(withings.get("expires_at", 0), "plugin.withings.expires_at"),
         measures_csv=_configured_data_path(
             data_dir,
             withings,
-            "withings.measures_csv",
+            "plugin.withings.measures_csv",
             Path("withings/body_measures.csv"),
         ),
         activity_csv=_configured_data_path(
             data_dir,
             withings,
-            "withings.activity_csv",
+            "plugin.withings.activity_csv",
             Path("withings/activity.csv"),
         ),
         workouts_csv=_configured_data_path(
             data_dir,
             withings,
-            "withings.workouts_csv",
+            "plugin.withings.workouts_csv",
             Path("withings/workouts.csv"),
         ),
         sleep_csv=_configured_data_path(
             data_dir,
             withings,
-            "withings.sleep_csv",
+            "plugin.withings.sleep_csv",
             Path("withings/sleep.csv"),
         ),
-        raw_dir=_configured_data_path(data_dir, withings, "withings.raw_dir", Path("withings/raw")),
-        days=_positive_int(sync.get("days", 30), "sync.withings.days"),
+        raw_dir=_configured_data_path(data_dir, withings, "plugin.withings.raw_dir", Path("withings/raw")),
+        days=_positive_int(withings.get("sync_days", 30), "plugin.withings.sync_days"),
     )
 
 
 def _load_hevy_config(data: dict[str, Any], data_dir: Path) -> HevyConfig:
-    hevy = data.get("hevy", {})
+    hevy = _plugin_section(data, "hevy")
     return HevyConfig(
         workouts_csv=_configured_data_path(
             data_dir,
             hevy,
-            "hevy.workouts_csv",
+            "plugin.hevy.workouts_csv",
             Path("hevy/workouts.csv"),
         ),
-        sets_csv=_configured_data_path(data_dir, hevy, "hevy.sets_csv", Path("hevy/sets.csv")),
-        raw_dir=_configured_data_path(data_dir, hevy, "hevy.raw_dir", Path("hevy/raw")),
-        browser_dir=_configured_data_path(data_dir, hevy, "hevy.browser_dir", Path("hevy/browser")),
+        sets_csv=_configured_data_path(data_dir, hevy, "plugin.hevy.sets_csv", Path("hevy/sets.csv")),
+        raw_dir=_configured_data_path(data_dir, hevy, "plugin.hevy.raw_dir", Path("hevy/raw")),
+        browser_dir=_configured_data_path(data_dir, hevy, "plugin.hevy.browser_dir", Path("hevy/browser")),
         login_timeout_seconds=_positive_int(
             hevy.get("login_timeout_seconds", 300),
-            "hevy.login_timeout_seconds",
+            "plugin.hevy.login_timeout_seconds",
         ),
     )
 
 
 def _load_suunto_config(data: dict[str, Any], data_dir: Path) -> SuuntoConfig:
-    suunto = data.get("suunto", {})
-    sync = data.get("sync", {}).get("suunto", {})
+    suunto = _plugin_section(data, "suunto")
     return SuuntoConfig(
         enabled=bool(suunto.get("enabled", False)),
         command=str(Path(str(suunto.get("command", "")).strip() or "suuntool").expanduser()),
         workouts_csv=_configured_data_path(
             data_dir,
             suunto,
-            "suunto.workouts_csv",
+            "plugin.suunto.workouts_csv",
             Path("suunto/workouts.csv"),
         ),
-        raw_dir=_configured_data_path(data_dir, suunto, "suunto.raw_dir", Path("suunto/raw")),
-        days=_positive_int(sync.get("days", 30), "sync.suunto.days"),
+        raw_dir=_configured_data_path(data_dir, suunto, "plugin.suunto.raw_dir", Path("suunto/raw")),
+        days=_positive_int(suunto.get("sync_days", 30), "plugin.suunto.sync_days"),
     )
 
 
 def _load_vitalsync_config(data: dict[str, Any], data_dir: Path) -> VitalsyncConfig:
-    vitalsync = data.get("vitalsync", {})
-    sync = data.get("sync", {}).get("vitalsync", {})
+    vitalsync = _plugin_section(data, "vitalsync")
     return VitalsyncConfig(
         enabled=bool(vitalsync.get("enabled", False)),
         base_url=str(
@@ -324,24 +321,34 @@ def _load_vitalsync_config(data: dict[str, Any], data_dir: Path) -> VitalsyncCon
         sleep_csv=_configured_data_path(
             data_dir,
             vitalsync,
-            "vitalsync.sleep_csv",
+            "plugin.vitalsync.sleep_csv",
             Path("vitalsync/sleep.csv"),
         ),
         steps_csv=_configured_data_path(
             data_dir,
             vitalsync,
-            "vitalsync.steps_csv",
+            "plugin.vitalsync.steps_csv",
             Path("vitalsync/steps.csv"),
         ),
         blood_pressure_csv=_configured_data_path(
             data_dir,
             vitalsync,
-            "vitalsync.blood_pressure_csv",
+            "plugin.vitalsync.blood_pressure_csv",
             Path("vitalsync/blood_pressure.csv"),
         ),
-        raw_dir=_configured_data_path(data_dir, vitalsync, "vitalsync.raw_dir", Path("vitalsync/raw")),
-        days=_positive_int(sync.get("days", 30), "sync.vitalsync.days"),
+        raw_dir=_configured_data_path(data_dir, vitalsync, "plugin.vitalsync.raw_dir", Path("vitalsync/raw")),
+        days=_positive_int(vitalsync.get("sync_days", 30), "plugin.vitalsync.sync_days"),
     )
+
+
+def _plugin_section(data: dict[str, Any], name: str) -> dict[str, Any]:
+    plugins = data.get("plugin", {})
+    if plugins and not isinstance(plugins, dict):
+        raise SystemExit("plugin must be a table.")
+    section = plugins.get(name, {})
+    if section and not isinstance(section, dict):
+        raise SystemExit(f"plugin.{name} must be a table.")
+    return section
 
 
 def _load_context_config(data: dict[str, Any]) -> ContextConfig:
@@ -384,13 +391,6 @@ def _configured_data_path(data_dir: Path, section: dict[str, Any], name: str, de
     if path.is_absolute():
         raise SystemExit(f"{name} must be relative to app.data_dir.")
     return data_dir / path
-
-
-def _withings_sync_section(data: dict[str, Any]) -> dict[str, Any]:
-    sync = data.get("sync", {})
-    if isinstance(sync.get("withings"), dict):
-        return sync["withings"]
-    return sync
 
 
 def _required_token_value(token: dict[str, Any], key: str, service: str = "Withings") -> str:

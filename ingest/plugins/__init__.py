@@ -1,7 +1,7 @@
-"""Source adapters.
+"""In-repository plugins.
 
-Adapters fetch raw data and write normalized local records. Daily state builders
-decide how records contribute to AI-readable context.
+Plugins fetch raw data and write normalized local records. Daily state builders
+decide how plugin records contribute to AI-readable context.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Protocol
 from ingest.config import AppConfig
 
 
-class SourceAdapter(Protocol):
+class Plugin(Protocol):
     name: str
 
     def sync(self, config: AppConfig) -> list[Path]:

@@ -141,15 +141,15 @@ BUILTIN_CONTEXT_DEFAULTS: dict[tuple[str, ...], str] = {
 }
 
 SUPPORTED_CONTEXT_SOURCES: dict[tuple[str, ...], set[str]] = {
-    ("activity", "workout"): {"withings", "hevy", "suunto"},
+    ("activity", "workout"): {"hevy", "suunto", "withings"},
     ("activity", "workout", "sets"): {"hevy", "none"},
     ("activity", "workout", "load"): {"suunto", "none"},
-    ("measurement", "steps"): {"withings", "vitalsync", "none"},
+    ("measurement", "steps"): {"none", "vitalsync", "withings"},
     ("measurement", "weight"): {"withings", "none"},
     ("measurement", "lean_mass"): {"withings", "none"},
     ("measurement", "fat_mass"): {"withings", "none"},
     ("measurement", "blood_pressure"): {"vitalsync", "none"},
-    ("recovery", "sleep"): {"withings", "vitalsync", "none"},
+    ("recovery", "sleep"): {"none", "vitalsync", "withings"},
 }
 
 

@@ -8,7 +8,7 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 from ingest.config import load_config
-from ingest.sources import vitalsync
+from ingest.plugins import vitalsync
 
 
 class FakeResponse:
@@ -143,7 +143,7 @@ class VitalsyncTest(unittest.TestCase):
 data_dir = "{data_dir}"
 timezone = "Asia/Tokyo"
 
-[vitalsync]
+[plugin.vitalsync]
 enabled = true
 access_token = "access"
 """.strip(),
@@ -152,7 +152,7 @@ access_token = "access"
             config = load_config(config_path)
             session = FakeSession()
 
-            with mock.patch("ingest.sources.vitalsync._requests", return_value=FakeRequests(session)):
+            with mock.patch("ingest.plugins.vitalsync._requests", return_value=FakeRequests(session)):
                 written = vitalsync.sync(config, end_date=date(2026, 6, 25))
 
             self.assertEqual(
@@ -183,7 +183,7 @@ access_token = "access"
 data_dir = "{data_dir}"
 timezone = "Asia/Tokyo"
 
-[vitalsync]
+[plugin.vitalsync]
 enabled = true
 client_id = "client"
 refresh_token = "refresh"
@@ -205,7 +205,7 @@ expires_at = "2099-01-01T00:00:00Z"
                 ],
             )
 
-            with mock.patch("ingest.sources.vitalsync._requests", return_value=FakeRequests(session)):
+            with mock.patch("ingest.plugins.vitalsync._requests", return_value=FakeRequests(session)):
                 written = vitalsync.sync(config, end_date=date(2026, 6, 25))
 
             self.assertEqual(len(written), 4)
@@ -233,7 +233,7 @@ expires_at = "2099-01-01T00:00:00Z"
 data_dir = "{data_dir}"
 timezone = "Asia/Tokyo"
 
-[vitalsync]
+[plugin.vitalsync]
 enabled = true
 access_token = "access"
 """.strip(),
@@ -261,7 +261,7 @@ access_token = "access"
             config_path = root / "ingest.toml"
             config_path.write_text(
                 """
-[vitalsync]
+[plugin.vitalsync]
 base_url = "https://receiver.example/vitalsync/v1"
 client_id = "client"
 refresh_token = "refresh"
@@ -286,7 +286,7 @@ access_token = "stale-access"
             config_path = root / "ingest.toml"
             config_path.write_text(
                 """
-[vitalsync]
+[plugin.vitalsync]
 base_url = "https://receiver.example/vitalsync/v1"
 """.strip(),
                 encoding="utf-8",
@@ -301,7 +301,7 @@ base_url = "https://receiver.example/vitalsync/v1"
                 }
             )
 
-            with mock.patch("ingest.sources.vitalsync._requests", return_value=FakeRequests(session)):
+            with mock.patch("ingest.plugins.vitalsync._requests", return_value=FakeRequests(session)):
                 token = vitalsync.register_client(
                     config,
                     pairing_token="pair",
