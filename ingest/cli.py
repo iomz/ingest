@@ -6,6 +6,7 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from collections.abc import Awaitable, Callable
+from urllib.parse import urlparse
 
 import anyio
 
@@ -16,6 +17,7 @@ from ingest.context import (
     render_daily_terminal_context,
 )
 from ingest.plugins import hevy, suunto, vitalsync, withings
+from ingest import prompts
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,27 +72,48 @@ def build_parser() -> argparse.ArgumentParser:
 
     auth_parser = subparsers.add_parser("auth", help="Authentication helper commands.")
     auth_subparsers = auth_parser.add_subparsers(dest="service", required=True)
+    auth_subparsers.add_parser("hevy", help="Log in to Hevy and save the Playwright browser session.")
     withings_auth_parser = auth_subparsers.add_parser("withings", help="Withings OAuth helpers.")
-    withings_auth_subparsers = withings_auth_parser.add_subparsers(dest="command", required=True)
+    withings_auth_parser.add_argument("--client-id", help="Withings OAuth client id.")
+    withings_auth_parser.add_argument("--client-secret", help="Withings OAuth client secret.")
+    withings_auth_parser.add_argument(
+        "--redirect-uri",
+        help="Registered Withings redirect URI. Defaults to local callback.",
+    )
+    withings_auth_parser.add_argument(
+        "--no-local-callback",
+        action="store_true",
+        help="Do not start the local OAuth callback server; prompt for pasted code instead.",
+    )
+    withings_auth_parser.add_argument(
+        "--callback-timeout-seconds",
+        type=int,
+        default=withings.LOCAL_CALLBACK_TIMEOUT_SECONDS,
+        help="Seconds to wait for the local OAuth callback.",
+    )
+    withings_auth_subparsers = withings_auth_parser.add_subparsers(dest="command", required=False)
     withings_auth_url_parser = withings_auth_subparsers.add_parser(
         "auth-url",
         help="Print a Withings OAuth URL with metrics and activity scopes.",
     )
     withings_auth_url_parser.add_argument("--redirect-uri", required=True, help="Registered Withings redirect URI.")
     withings_auth_url_parser.add_argument("--state", default="ingest", help="OAuth state value.")
+    withings_auth_url_parser.add_argument("--client-id", help="Withings OAuth client id.")
     withings_exchange_parser = withings_auth_subparsers.add_parser(
         "exchange-code",
         help="Exchange a Withings OAuth code and save tokens.",
     )
     withings_exchange_parser.add_argument("--redirect-uri", required=True, help="Registered Withings redirect URI.")
     withings_exchange_parser.add_argument("--code", required=True, help="Authorization code from the redirect URL.")
+    withings_exchange_parser.add_argument("--client-id", help="Withings OAuth client id.")
+    withings_exchange_parser.add_argument("--client-secret", help="Withings OAuth client secret.")
     vitalsync_auth_parser = auth_subparsers.add_parser("vitalsync", help="Vitalsync token helpers.")
     vitalsync_auth_subparsers = vitalsync_auth_parser.add_subparsers(dest="command", required=True)
     vitalsync_register_parser = vitalsync_auth_subparsers.add_parser(
         "register-client",
         help="Register ingest as a Vitalsync read client with a pairing token.",
     )
-    vitalsync_register_parser.add_argument("--pairing-token", required=True, help="One-time Vitalsync pairing token.")
+    vitalsync_register_parser.add_argument("--pairing-token", help="One-time Vitalsync pairing token.")
     vitalsync_register_parser.add_argument(
         "--client-label",
         default="ingest",
@@ -155,27 +178,52 @@ def main(argv: list[str] | None = None) -> int:
             print(path)
         return 0
 
+    if args.source == "auth" and args.service == "hevy":
+        email = prompts.text("Hevy email or username")
+        password = prompts.password("Hevy password")
+        hevy.authenticate(config, email=email, password=password)
+        print(f"Hevy browser session ready: {config.hevy.browser_dir}")
+        return 0
+
+    if args.source == "auth" and args.service == "withings" and args.command is None:
+        _auth_withings(config, args)
+        print(config.withings.auth_state_path)
+        return 0
+
     if args.source == "auth" and args.service == "withings" and args.command == "auth-url":
-        print(withings.authorization_url(config, redirect_uri=args.redirect_uri, state=args.state))
+        client_id = args.client_id or config.withings.client_id or prompts.text("Withings client id")
+        print(withings.authorization_url(config, redirect_uri=args.redirect_uri, state=args.state, client_id=client_id))
         return 0
 
     if args.source == "auth" and args.service == "withings" and args.command == "exchange-code":
-        withings.exchange_authorization_code(config, code=args.code, redirect_uri=args.redirect_uri)
-        print(config.path)
+        client_id = args.client_id or config.withings.client_id or prompts.text("Withings client id")
+        client_secret = (
+            args.client_secret or config.withings.client_secret or prompts.password("Withings client secret")
+        )
+        withings.exchange_authorization_code(
+            config,
+            code=args.code,
+            redirect_uri=args.redirect_uri,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        print(config.withings.auth_state_path)
         return 0
 
     if args.source == "auth" and args.service == "vitalsync" and args.command == "register-client":
+        pairing_token = args.pairing_token or prompts.password("Vitalsync pairing token")
+        client_label = args.client_label or prompts.text("Vitalsync client label", default="ingest")
         vitalsync.register_client(
             config,
-            pairing_token=args.pairing_token,
-            client_label=args.client_label,
+            pairing_token=pairing_token,
+            client_label=client_label,
         )
-        print(config.path)
+        print(config.vitalsync.auth_state_path)
         return 0
 
     if args.source == "auth" and args.service == "vitalsync" and args.command == "refresh-token":
         vitalsync.refresh_configured_access_token(config)
-        print(config.path)
+        print(config.vitalsync.auth_state_path)
         return 0
 
     if args.source == "today":
@@ -224,6 +272,43 @@ def _add_daily_options(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Print Markdown instead of the terminal view.",
     )
+
+
+def _auth_withings(config: AppConfig, args: argparse.Namespace) -> None:
+    client_id = args.client_id or config.withings.client_id or prompts.text("Withings client id")
+    client_secret = args.client_secret or config.withings.client_secret or prompts.password("Withings client secret")
+    default_redirect_uri = "http://127.0.0.1:8000/callback"
+    redirect_uri = args.redirect_uri or prompts.text("Withings redirect URI", default=default_redirect_uri)
+    auth_url = withings.authorization_url(config, redirect_uri=redirect_uri, client_id=client_id)
+    code = ""
+    if not args.no_local_callback and _local_http_redirect(redirect_uri):
+        use_local_callback = prompts.confirm(
+            f"Open browser and wait for local callback at {redirect_uri}?",
+            default=True,
+        )
+        if use_local_callback:
+            print(auth_url)
+            code = withings.capture_local_oauth_code(
+                auth_url,
+                redirect_uri,
+                timeout_seconds=args.callback_timeout_seconds,
+            )
+    if not code:
+        print(auth_url)
+        pasted = prompts.text("Paste Withings redirect URL or authorization code")
+        code = withings.parse_authorization_code(pasted)
+    withings.exchange_authorization_code(
+        config,
+        code=code,
+        redirect_uri=redirect_uri,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+
+
+def _local_http_redirect(redirect_uri: str) -> bool:
+    parsed = urlparse(redirect_uri)
+    return parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"} and parsed.port is not None
 
 
 def _sync_for_daily_context(config: AppConfig, enabled: bool) -> None:
@@ -289,24 +374,26 @@ def _plugin_enabled(config: AppConfig, plugin: str) -> bool:
 
 
 def _plugin_unavailable_reason(config: AppConfig, plugin: str) -> str:
-    if not bool(getattr(getattr(config, plugin), "configured")):
-        return f"missing [plugin.{plugin}] config table"
     if plugin == "withings":
         if config.withings.access_token:
             return ""
         if config.withings.refresh_token and config.withings.client_id and config.withings.client_secret:
             return ""
-        return "set plugin.withings.refresh_token with client_id/client_secret, or plugin.withings.access_token"
+        return f"run `ingest auth withings exchange-code`; missing auth state at {config.withings.auth_state_path}"
     if plugin == "hevy":
+        if not config.hevy.configured:
+            return "missing [plugin.hevy] config table"
         return ""
     if plugin == "suunto":
+        if not config.suunto.configured:
+            return "missing [plugin.suunto] config table"
         return "" if shutil.which(config.suunto.command) else f"command not found: {config.suunto.command}"
     if plugin == "vitalsync":
         if config.vitalsync.access_token:
             return ""
         if config.vitalsync.refresh_token and config.vitalsync.client_id:
             return ""
-        return "set plugin.vitalsync.access_token, or refresh_token with client_id"
+        return f"run `ingest auth vitalsync register-client`; missing auth state at {config.vitalsync.auth_state_path}"
     return f"unknown plugin {plugin!r}"
 
 
