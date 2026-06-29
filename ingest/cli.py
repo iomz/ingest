@@ -66,22 +66,38 @@ def build_parser() -> argparse.ArgumentParser:
     hevy_import_parser = import_subparsers.add_parser("hevy", help="Import Hevy workout CSV export.")
     hevy_import_parser.add_argument("--csv", required=True, type=Path, help="Path to Hevy workout CSV export.")
 
-    oauth_parser = subparsers.add_parser("oauth", help="OAuth helper commands.")
-    oauth_subparsers = oauth_parser.add_subparsers(dest="service", required=True)
-    withings_oauth_parser = oauth_subparsers.add_parser("withings", help="Withings OAuth helpers.")
-    withings_oauth_subparsers = withings_oauth_parser.add_subparsers(dest="command", required=True)
-    withings_auth_url_parser = withings_oauth_subparsers.add_parser(
+    auth_parser = subparsers.add_parser("auth", help="Authentication helper commands.")
+    auth_subparsers = auth_parser.add_subparsers(dest="service", required=True)
+    withings_auth_parser = auth_subparsers.add_parser("withings", help="Withings OAuth helpers.")
+    withings_auth_subparsers = withings_auth_parser.add_subparsers(dest="command", required=True)
+    withings_auth_url_parser = withings_auth_subparsers.add_parser(
         "auth-url",
         help="Print a Withings OAuth URL with metrics and activity scopes.",
     )
     withings_auth_url_parser.add_argument("--redirect-uri", required=True, help="Registered Withings redirect URI.")
     withings_auth_url_parser.add_argument("--state", default="ingest", help="OAuth state value.")
-    withings_exchange_parser = withings_oauth_subparsers.add_parser(
+    withings_exchange_parser = withings_auth_subparsers.add_parser(
         "exchange-code",
         help="Exchange a Withings OAuth code and save tokens.",
     )
     withings_exchange_parser.add_argument("--redirect-uri", required=True, help="Registered Withings redirect URI.")
     withings_exchange_parser.add_argument("--code", required=True, help="Authorization code from the redirect URL.")
+    vitalsync_auth_parser = auth_subparsers.add_parser("vitalsync", help="Vitalsync token helpers.")
+    vitalsync_auth_subparsers = vitalsync_auth_parser.add_subparsers(dest="command", required=True)
+    vitalsync_register_parser = vitalsync_auth_subparsers.add_parser(
+        "register-client",
+        help="Register ingest as a Vitalsync read client with a pairing token.",
+    )
+    vitalsync_register_parser.add_argument("--pairing-token", required=True, help="One-time Vitalsync pairing token.")
+    vitalsync_register_parser.add_argument(
+        "--client-label",
+        default="ingest",
+        help="Label stored by the Vitalsync receiver.",
+    )
+    vitalsync_auth_subparsers.add_parser(
+        "refresh-token",
+        help="Refresh and save the configured Vitalsync access token.",
+    )
 
     return parser
 
@@ -133,12 +149,26 @@ def main(argv: list[str] | None = None) -> int:
             print(path)
         return 0
 
-    if args.source == "oauth" and args.service == "withings" and args.command == "auth-url":
+    if args.source == "auth" and args.service == "withings" and args.command == "auth-url":
         print(withings.authorization_url(config, redirect_uri=args.redirect_uri, state=args.state))
         return 0
 
-    if args.source == "oauth" and args.service == "withings" and args.command == "exchange-code":
+    if args.source == "auth" and args.service == "withings" and args.command == "exchange-code":
         withings.exchange_authorization_code(config, code=args.code, redirect_uri=args.redirect_uri)
+        print(config.path)
+        return 0
+
+    if args.source == "auth" and args.service == "vitalsync" and args.command == "register-client":
+        vitalsync.register_client(
+            config,
+            pairing_token=args.pairing_token,
+            client_label=args.client_label,
+        )
+        print(config.path)
+        return 0
+
+    if args.source == "auth" and args.service == "vitalsync" and args.command == "refresh-token":
+        vitalsync.refresh_configured_access_token(config)
         print(config.path)
         return 0
 

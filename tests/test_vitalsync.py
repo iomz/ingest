@@ -21,8 +21,20 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        token_response: dict[str, object] | None = None,
+        get_responses: list[FakeResponse] | None = None,
+    ) -> None:
         self.get_urls: list[str] = []
+        self.get_headers: list[dict[str, object]] = []
+        self.post_urls: list[str] = []
+        self.post_jsons: list[dict[str, object]] = []
+        self.get_responses = get_responses or []
+        self.token_response = token_response or {
+            "access_token": "new-access",
+            "expires_at": "2026-06-29T12:00:00Z",
+        }
 
     def __enter__(self) -> FakeSession:
         return self
@@ -30,10 +42,22 @@ class FakeSession:
     def __exit__(self, *_args: object) -> None:
         return None
 
-    def get(self, url: str, **_kwargs: object) -> FakeResponse:
+    def get(self, url: str, **kwargs: object) -> FakeResponse:
         self.get_urls.append(url)
+        headers = kwargs.get("headers")
+        if isinstance(headers, dict):
+            self.get_headers.append(headers)
+        if self.get_responses:
+            return self.get_responses.pop(0)
         records = blood_pressure_records() if "sample_type=blood_pressure" in url else sleep_records()
         return FakeResponse({"schema": "vitalsync.records.v1", "records": records})
+
+    def post(self, url: str, **kwargs: object) -> FakeResponse:
+        self.post_urls.append(url)
+        body = kwargs.get("json")
+        if isinstance(body, dict):
+            self.post_jsons.append(body)
+        return FakeResponse(self.token_response)
 
 
 class FakeRequests:
@@ -148,6 +172,56 @@ access_token = "access"
             blood_pressure_csv = (data_dir / "vitalsync/blood_pressure.csv").read_text(encoding="utf-8")
             self.assertIn("121,79", blood_pressure_csv)
 
+    def test_sync_refreshes_and_retries_once_after_records_401(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                f"""
+[app]
+data_dir = "{data_dir}"
+timezone = "Asia/Tokyo"
+
+[vitalsync]
+enabled = true
+client_id = "client"
+refresh_token = "refresh"
+access_token = "revoked-access"
+expires_at = "2099-01-01T00:00:00Z"
+""".strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            session = FakeSession(
+                token_response={
+                    "access_token": "new-access",
+                    "expires_at": "2099-01-02T00:00:00Z",
+                },
+                get_responses=[
+                    FakeResponse({"message": "token missing, expired, or revoked"}, status_code=401),
+                    FakeResponse({"schema": "vitalsync.records.v1", "records": sleep_records()}),
+                    FakeResponse({"schema": "vitalsync.records.v1", "records": blood_pressure_records()}),
+                ],
+            )
+
+            with mock.patch("ingest.sources.vitalsync._requests", return_value=FakeRequests(session)):
+                written = vitalsync.sync(config, end_date=date(2026, 6, 25))
+
+            self.assertEqual(len(written), 4)
+            self.assertEqual(session.post_urls, ["https://api.sazanka.io/vitalsync/v1/tokens/refresh"])
+            self.assertEqual(session.post_jsons, [{"refresh_token": "refresh", "client_id": "client"}])
+            self.assertEqual(
+                session.get_headers,
+                [
+                    {"Authorization": "Bearer revoked-access"},
+                    {"Authorization": "Bearer new-access"},
+                    {"Authorization": "Bearer new-access"},
+                ],
+            )
+            updated = load_config(config_path)
+            self.assertEqual(updated.vitalsync.access_token, "new-access")
+
     def test_sync_start_uses_fallback_when_blood_pressure_cache_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -180,6 +254,77 @@ access_token = "access"
             config = load_config(config_path)
 
             self.assertEqual(vitalsync._sync_start_date(config, date(2026, 6, 27)), date(2026, 5, 29))
+
+    def test_get_access_token_refreshes_when_refresh_token_exists_and_expiry_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                """
+[vitalsync]
+base_url = "https://receiver.example/vitalsync/v1"
+client_id = "client"
+refresh_token = "refresh"
+access_token = "stale-access"
+""".strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            session = FakeSession()
+
+            access_token = vitalsync.get_access_token(session, config)
+
+            self.assertEqual(access_token, "new-access")
+            self.assertEqual(session.post_urls, ["https://receiver.example/vitalsync/v1/tokens/refresh"])
+            self.assertEqual(session.post_jsons, [{"refresh_token": "refresh", "client_id": "client"}])
+            updated = load_config(config_path)
+            self.assertEqual(updated.vitalsync.access_token, "new-access")
+
+    def test_register_client_exchanges_pairing_token_and_saves_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                """
+[vitalsync]
+base_url = "https://receiver.example/vitalsync/v1"
+""".strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            session = FakeSession(
+                {
+                    "client_id": "client",
+                    "refresh_token": "refresh",
+                    "access_token": "access",
+                    "expires_at": "2026-06-29T12:00:00Z",
+                }
+            )
+
+            with mock.patch("ingest.sources.vitalsync._requests", return_value=FakeRequests(session)):
+                token = vitalsync.register_client(
+                    config,
+                    pairing_token="pair",
+                    client_label="ingest on test",
+                )
+
+            self.assertEqual(token["access_token"], "access")
+            self.assertEqual(session.post_urls, ["https://receiver.example/vitalsync/v1/clients/register"])
+            self.assertEqual(
+                session.post_jsons,
+                [
+                    {
+                        "schema": "vitalsync.client_registration.v1",
+                        "pairing_token": "pair",
+                        "client_type": "ingest",
+                        "client_label": "ingest on test",
+                    }
+                ],
+            )
+            updated = load_config(config_path)
+            self.assertEqual(updated.vitalsync.client_id, "client")
+            self.assertEqual(updated.vitalsync.refresh_token, "refresh")
+            self.assertEqual(updated.vitalsync.access_token, "access")
 
 
 def sleep_records() -> list[dict[str, object]]:

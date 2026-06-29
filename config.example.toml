@@ -52,6 +52,7 @@ days = 30
 # Optional. Apple Health records synced by the Vitalsync iOS app.
 enabled = false
 base_url = "https://receiver.example.com/vitalsync/v1"
+# Fill these with `ingest auth vitalsync register-client --pairing-token "<PAIRING_TOKEN>"`.
 client_id = ""
 refresh_token = ""
 access_token = ""
