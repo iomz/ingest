@@ -54,7 +54,7 @@ class SuuntoSourceTest(unittest.TestCase):
 
         self.assertIn("| Load | TSS 46.0", content)
         self.assertIn("| TSS | 46.0 TSS |", content)
-        self.assertIn("- Workout source: Suunto", content)
+        self.assertIn("- Activity: Suunto", content)
         self.assertIn("- Activity count: 1 primary", content)
         self.assertNotIn("Imported Walk", content)
 
@@ -104,7 +104,7 @@ enabled = true
             content = generate_daily_context(config, date(2026, 6, 26)).read_text(encoding="utf-8")
 
             self.assertEqual([activity.source for activity in state.activities], ["suunto"])
-            self.assertIn("- Workout source: Suunto", content)
+            self.assertIn("- Activity: Suunto", content)
             self.assertIn("- Activity count: 1 primary", content)
             self.assertIn("Crosstrainer", content)
             self.assertNotIn("elliptical-copy", content)
@@ -455,7 +455,6 @@ command = "{command_path}"
             )
             self.assertIn("HR        avg 120 / max 170", terminal_output.getvalue())
             self.assertIn("Energy    600 kcal", terminal_output.getvalue())
-            self.assertNotIn("recovery", content.lower())
 
     def test_report_pairs_hevy_and_suunto_strength_as_one_enriched_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -531,7 +530,8 @@ command = "{command_path}"
                 content,
             )
             self.assertIn("  - Hevy Lower body / 3 sets / 1700 kg volume", content)
-            self.assertIn("- Workout source: Hevy, Suunto", content)
+            self.assertIn("- Activity: Suunto", content)
+            self.assertIn("    - Sets: Hevy", content)
             self.assertIn("- Activity count: 1 primary", content)
             self.assertIn(
                 "suunto:strength-1 / 72 min / 420 kcal / HR 118-156 / TSS(hr) 38.4",
@@ -866,9 +866,9 @@ command = "{command_path}"
             self.assertIn("### Body", content)
             self.assertNotIn("Walking TSS", content)
             self.assertNotIn("+1244%", content)
-            self.assertIn("- Workout source: Suunto", content)
-            self.assertIn("- Step source: Vitalsync", content)
-            self.assertIn("- Body source: Withings", content)
+            self.assertIn("- Activity: Suunto", content)
+            self.assertIn("  - Steps: Vitalsync", content)
+            self.assertIn("- Measurement: Withings", content)
             self.assertIn("- Activity count: 1 primary", content)
             self.assertIn(
                 "- Training load history: Limited; ATL/TSB warming up",

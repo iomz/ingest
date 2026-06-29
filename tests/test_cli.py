@@ -181,6 +181,7 @@ class CliTest(unittest.TestCase):
             config_path.write_text(
                 (
                     f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[plugin.hevy]\n\n"
                     "[context.activity]\nworkout = \"withings\"\n"
                 ),
                 encoding="utf-8",
@@ -309,8 +310,8 @@ class CliTest(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             withings_sync.assert_not_called()
-            self.assertIn("Workout source  Hevy", stdout.getvalue())
-            self.assertIn("Body source     Withings", stdout.getvalue())
+            self.assertIn("Workout: Hevy", stdout.getvalue())
+            self.assertIn("Measurement: Withings", stdout.getvalue())
             self.assertIn("Workout", stdout.getvalue())
             self.assertIn("    Push Day / 76 min", stdout.getvalue())
             self.assertNotIn("unknown distance", stdout.getvalue())
@@ -324,6 +325,10 @@ class CliTest(unittest.TestCase):
             config_path.write_text(
                 (
                     f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[plugin.hevy]\n\n"
+                    "[plugin.suunto]\nenabled = false\n\n"
+                    "[plugin.vitalsync]\nenabled = false\n\n"
+                    "[plugin.withings]\naccess_token = \"access\"\n\n"
                     "[context.activity]\nworkout = \"withings\"\n"
                 ),
                 encoding="utf-8",
@@ -358,6 +363,7 @@ class CliTest(unittest.TestCase):
             config_path.write_text(
                 (
                     f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[plugin.hevy]\n\n"
                     "[context.activity]\nworkout = \"withings\"\n"
                 ),
                 encoding="utf-8",
@@ -384,6 +390,10 @@ class CliTest(unittest.TestCase):
             config_path.write_text(
                 (
                     f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[plugin.hevy]\n\n"
+                    "[plugin.suunto]\nenabled = false\n\n"
+                    "[plugin.vitalsync]\nenabled = false\n\n"
+                    "[plugin.withings]\naccess_token = \"access\"\n\n"
                     "[context.activity]\nworkout = \"withings\"\n"
                 ),
                 encoding="utf-8",
@@ -415,7 +425,13 @@ class CliTest(unittest.TestCase):
             hevy_path = data_dir / "hevy/workouts.csv"
             suunto_path = data_dir / "suunto/workouts.csv"
             config_path.write_text(
-                f'[app]\ndata_dir = "{data_dir}"\n\n[plugin.suunto]\nenabled = true\n',
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[plugin.hevy]\n\n"
+                    "[plugin.suunto]\nenabled = true\n\n"
+                    "[plugin.vitalsync]\nenabled = false\n\n"
+                    "[plugin.withings]\naccess_token = \"access\"\n"
+                ),
                 encoding="utf-8",
             )
 
@@ -444,7 +460,13 @@ class CliTest(unittest.TestCase):
             hevy_path = data_dir / "hevy/workouts.csv"
             vitalsync_path = data_dir / "vitalsync/sleep.csv"
             config_path.write_text(
-                f'[app]\ndata_dir = "{data_dir}"\n\n[plugin.vitalsync]\nenabled = true\n',
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[plugin.hevy]\n\n"
+                    "[plugin.suunto]\nenabled = false\n\n"
+                    "[plugin.vitalsync]\nenabled = true\naccess_token = \"access\"\n\n"
+                    "[plugin.withings]\naccess_token = \"access\"\n"
+                ),
                 encoding="utf-8",
             )
 
@@ -466,7 +488,13 @@ class CliTest(unittest.TestCase):
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
             config_path.write_text(
-                f'[app]\ndata_dir = "{root / "app-data"}"\n\n[plugin.vitalsync]\nenabled = true\n',
+                (
+                    f'[app]\ndata_dir = "{root / "app-data"}"\n\n'
+                    "[plugin.hevy]\n\n"
+                    "[plugin.suunto]\nenabled = false\n\n"
+                    "[plugin.vitalsync]\nenabled = true\naccess_token = \"access\"\n\n"
+                    "[plugin.withings]\naccess_token = \"access\"\n"
+                ),
                 encoding="utf-8",
             )
             active_sources: set[str] = set()
@@ -498,7 +526,15 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
-            config_path.write_text("", encoding="utf-8")
+            config_path.write_text(
+                """
+[plugin.hevy]
+
+[plugin.withings]
+access_token = "access"
+""".strip(),
+                encoding="utf-8",
+            )
             barrier = threading.Barrier(2, timeout=1)
 
             def sync_source(_config: object) -> list[Path]:
@@ -512,6 +548,38 @@ class CliTest(unittest.TestCase):
                 exit_code = main(["--config", str(config_path), "sync", "all"])
 
             self.assertEqual(exit_code, 0)
+
+    def test_sync_explicit_disabled_plugin_warns_and_skips(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text("[plugin.hevy]\nenabled = false\n", encoding="utf-8")
+            stderr = io.StringIO()
+
+            with (
+                mock.patch("ingest.cli.hevy.sync", return_value=[]) as hevy_sync,
+                contextlib.redirect_stderr(stderr),
+            ):
+                exit_code = main(["--config", str(config_path), "sync", "hevy"])
+
+            self.assertEqual(exit_code, 0)
+            hevy_sync.assert_not_called()
+            self.assertIn("plugin.hevy is disabled; skipping.", stderr.getvalue())
+
+    def test_sync_missing_plugin_config_warns_and_skips(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text("", encoding="utf-8")
+            stderr = io.StringIO()
+
+            with (
+                mock.patch("ingest.cli.hevy.sync", return_value=[]) as hevy_sync,
+                contextlib.redirect_stderr(stderr),
+            ):
+                exit_code = main(["--config", str(config_path), "sync", "hevy"])
+
+            self.assertEqual(exit_code, 0)
+            hevy_sync.assert_not_called()
+            self.assertIn("plugin.hevy unavailable; skipping: missing [plugin.hevy] config table", stderr.getvalue())
 
     def test_sync_all_does_not_swallow_base_exceptions(self) -> None:
         class CancellationSignal(BaseException):
@@ -548,7 +616,16 @@ class CliTest(unittest.TestCase):
             config_path = root / "ingest.toml"
             withings_path = data_dir / "withings/body_measures.csv"
             hevy_path = data_dir / "hevy/workouts.csv"
-            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[plugin.hevy]\n\n"
+                    "[plugin.suunto]\nenabled = false\n\n"
+                    "[plugin.vitalsync]\nenabled = false\n\n"
+                    "[plugin.withings]\naccess_token = \"access\"\n"
+                ),
+                encoding="utf-8",
+            )
 
             stdout = io.StringIO()
             with (

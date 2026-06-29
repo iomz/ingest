@@ -185,6 +185,8 @@ class WithingsTest(unittest.TestCase):
                         {"type": 1, "value": 7050, "unit": -2},
                         {"type": 4, "value": 180, "unit": -2},
                         {"type": 6, "value": 1842, "unit": -2},
+                        {"type": 9, "value": 7900, "unit": -2},
+                        {"type": 10, "value": 12100, "unit": -2},
                     ],
                 }
             ]
@@ -198,6 +200,11 @@ class WithingsTest(unittest.TestCase):
         self.assertEqual(rows[1]["unit"], "m")
         self.assertEqual(rows[2]["type_name"], "fat_ratio")
         self.assertEqual(rows[2]["unit"], "%")
+        self.assertEqual(rows[3]["type_name"], "diastolic_blood_pressure")
+        self.assertEqual(rows[3]["value"], "79.00")
+        self.assertEqual(rows[3]["unit"], "mmHg")
+        self.assertEqual(rows[4]["type_name"], "systolic_blood_pressure")
+        self.assertEqual(rows[4]["value"], "121.00")
 
     def test_builds_authorization_url_with_activity_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

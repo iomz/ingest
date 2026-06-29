@@ -18,6 +18,8 @@ DEFAULT_CONFIG_EXAMPLE_PATH = Path("config.example.toml")
 
 @dataclass(frozen=True)
 class WithingsConfig:
+    configured: bool
+    enabled: bool
     client_id: str
     client_secret: str
     refresh_token: str
@@ -33,15 +35,21 @@ class WithingsConfig:
 
 @dataclass(frozen=True)
 class HevyConfig:
+    configured: bool
+    enabled: bool
     workouts_csv: Path
     sets_csv: Path
     raw_dir: Path
     browser_dir: Path
+    email: str
+    password: str
     login_timeout_seconds: int
+    login_poll_interval_seconds: int
 
 
 @dataclass(frozen=True)
 class SuuntoConfig:
+    configured: bool
     enabled: bool
     command: str
     workouts_csv: Path
@@ -51,6 +59,7 @@ class SuuntoConfig:
 
 @dataclass(frozen=True)
 class VitalsyncConfig:
+    configured: bool
     enabled: bool
     base_url: str
     client_id: str
@@ -103,9 +112,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
     if not config_path.exists():
         if path is None:
             config_path.parent.mkdir(parents=True, exist_ok=True)
-        raise SystemExit(
-            f"Missing {config_path}. Copy {DEFAULT_CONFIG_EXAMPLE_PATH} to {config_path} and fill it in."
-        )
+        raise SystemExit(f"Missing {config_path}. Copy {DEFAULT_CONFIG_EXAMPLE_PATH} to {config_path} and fill it in.")
 
     try:
         with config_path.open("rb") as config_file:
@@ -235,6 +242,8 @@ def _load_timezone(data: dict[str, Any]) -> ZoneInfo:
 def _load_withings_config(data: dict[str, Any], data_dir: Path) -> WithingsConfig:
     withings = _plugin_section(data, "withings")
     return WithingsConfig(
+        configured=_plugin_configured(data, "withings"),
+        enabled=bool(withings.get("enabled", True)),
         client_id=str(withings.get("client_id", "")).strip(),
         client_secret=str(withings.get("client_secret") or withings.get("secret") or "").strip(),
         refresh_token=str(withings.get("refresh_token", "")).strip(),
@@ -272,6 +281,8 @@ def _load_withings_config(data: dict[str, Any], data_dir: Path) -> WithingsConfi
 def _load_hevy_config(data: dict[str, Any], data_dir: Path) -> HevyConfig:
     hevy = _plugin_section(data, "hevy")
     return HevyConfig(
+        configured=_plugin_configured(data, "hevy"),
+        enabled=bool(hevy.get("enabled", True)),
         workouts_csv=_configured_data_path(
             data_dir,
             hevy,
@@ -281,9 +292,15 @@ def _load_hevy_config(data: dict[str, Any], data_dir: Path) -> HevyConfig:
         sets_csv=_configured_data_path(data_dir, hevy, "plugin.hevy.sets_csv", Path("hevy/sets.csv")),
         raw_dir=_configured_data_path(data_dir, hevy, "plugin.hevy.raw_dir", Path("hevy/raw")),
         browser_dir=_configured_data_path(data_dir, hevy, "plugin.hevy.browser_dir", Path("hevy/browser")),
+        email=str(hevy.get("email", "")).strip(),
+        password=str(hevy.get("password", "")),
         login_timeout_seconds=_positive_int(
             hevy.get("login_timeout_seconds", 300),
             "plugin.hevy.login_timeout_seconds",
+        ),
+        login_poll_interval_seconds=_positive_int(
+            hevy.get("login_poll_interval_seconds", 2),
+            "plugin.hevy.login_poll_interval_seconds",
         ),
     )
 
@@ -291,7 +308,8 @@ def _load_hevy_config(data: dict[str, Any], data_dir: Path) -> HevyConfig:
 def _load_suunto_config(data: dict[str, Any], data_dir: Path) -> SuuntoConfig:
     suunto = _plugin_section(data, "suunto")
     return SuuntoConfig(
-        enabled=bool(suunto.get("enabled", False)),
+        configured=_plugin_configured(data, "suunto"),
+        enabled=bool(suunto.get("enabled", True)),
         command=str(Path(str(suunto.get("command", "")).strip() or "suuntool").expanduser()),
         workouts_csv=_configured_data_path(
             data_dir,
@@ -307,17 +325,14 @@ def _load_suunto_config(data: dict[str, Any], data_dir: Path) -> SuuntoConfig:
 def _load_vitalsync_config(data: dict[str, Any], data_dir: Path) -> VitalsyncConfig:
     vitalsync = _plugin_section(data, "vitalsync")
     return VitalsyncConfig(
-        enabled=bool(vitalsync.get("enabled", False)),
-        base_url=str(
-            vitalsync.get("base_url") or "https://api.sazanka.io/vitalsync/v1"
-        ).rstrip("/"),
+        configured=_plugin_configured(data, "vitalsync"),
+        enabled=bool(vitalsync.get("enabled", True)),
+        base_url=str(vitalsync.get("base_url") or "https://api.sazanka.io/vitalsync/v1").rstrip("/"),
         client_id=str(vitalsync.get("client_id", "")).strip(),
         refresh_token=str(vitalsync.get("refresh_token", "")).strip(),
         access_token=str(vitalsync.get("access_token", "")).strip(),
         expires_at=str(vitalsync.get("expires_at", "")).strip(),
-        source_bundle_id=str(
-            vitalsync.get("source_bundle_id", "com.lexwarelabs.goodmorning")
-        ).strip(),
+        source_bundle_id=str(vitalsync.get("source_bundle_id", "com.lexwarelabs.goodmorning")).strip(),
         sleep_csv=_configured_data_path(
             data_dir,
             vitalsync,
@@ -351,6 +366,11 @@ def _plugin_section(data: dict[str, Any], name: str) -> dict[str, Any]:
     return section
 
 
+def _plugin_configured(data: dict[str, Any], name: str) -> bool:
+    plugins = data.get("plugin", {})
+    return isinstance(plugins, dict) and name in plugins
+
+
 def _load_context_config(data: dict[str, Any]) -> ContextConfig:
     context = data.get("context", {})
     if context and not isinstance(context, dict):
@@ -378,9 +398,7 @@ def _load_ui_config(data: dict[str, Any]) -> UIConfig:
     if theme not in {"default", "colorful"}:
         raise SystemExit("ui.theme must be one of: default, colorful")
     if body_weight_goal not in {"loss", "maintenance", "gain"}:
-        raise SystemExit(
-            "ui.body_weight_goal must be one of: loss, maintenance, gain"
-        )
+        raise SystemExit("ui.body_weight_goal must be one of: loss, maintenance, gain")
     return UIConfig(theme=theme, body_weight_goal=body_weight_goal)
 
 

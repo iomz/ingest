@@ -43,6 +43,9 @@ class DailyState:
     measurement_source: str = ""
     blood_pressure_source: str = ""
     sleep_source: str = ""
+    activity_source: str = ""
+    measurement_domain_source: str = ""
+    recovery_source: str = ""
     workout_source: str = ""
     load_source: str = ""
     sets_source: str = ""
@@ -141,14 +144,17 @@ BUILTIN_CONTEXT_DEFAULTS: dict[tuple[str, ...], str] = {
 }
 
 SUPPORTED_CONTEXT_SOURCES: dict[tuple[str, ...], set[str]] = {
+    ("activity",): {"hevy", "none", "suunto", "withings"},
     ("activity", "workout"): {"hevy", "suunto", "withings"},
     ("activity", "workout", "sets"): {"hevy", "none"},
     ("activity", "workout", "load"): {"suunto", "none"},
+    ("measurement",): {"none", "withings"},
     ("measurement", "steps"): {"none", "vitalsync", "withings"},
     ("measurement", "weight"): {"withings", "none"},
     ("measurement", "lean_mass"): {"withings", "none"},
     ("measurement", "fat_mass"): {"withings", "none"},
-    ("measurement", "blood_pressure"): {"vitalsync", "none"},
+    ("measurement", "blood_pressure"): {"none", "vitalsync", "withings"},
+    ("recovery",): {"none", "vitalsync", "withings"},
     ("recovery", "sleep"): {"none", "vitalsync", "withings"},
 }
 
@@ -159,18 +165,18 @@ def _context_source(
     warnings: list[str],
 ) -> str | None:
     configured = _configured_context_source(config, path, warnings)
-    source = configured or _builtin_context_source(path)
+    source = configured if configured is not None else _builtin_context_source(path)
     if source is None:
         return None
     if source == "none":
-        return None
+        return "none"
     supported = SUPPORTED_CONTEXT_SOURCES.get(path, set())
     if source not in supported:
         _context_warning(
             warnings,
             f"context.{'.'.join(path)} source {source!r} is not supported; skipping.",
         )
-        return None
+        return "none"
     return source
 
 
@@ -230,7 +236,7 @@ def _context_warning(warnings: list[str], message: str) -> None:
 
 
 def _source_label(source: str | None) -> str:
-    if not source:
+    if not source or source == "none":
         return "None"
     return {
         "hevy": "Hevy",
@@ -246,8 +252,10 @@ def render_daily_terminal_context(
     ui: UIConfig | None = None,
 ) -> None:
     from rich.console import Console
+    from rich.padding import Padding
     from rich.table import Table
     from rich.text import Text
+    from rich.tree import Tree
 
     console = console or Console()
     ui = ui or UIConfig(theme="default", body_weight_goal="maintenance")
@@ -522,16 +530,12 @@ def render_daily_terminal_context(
         _render_terminal_activity_sections(console, activities, state.hevy_sets, theme)
 
     _render_section_title(console, "Data Coverage", theme)
+    console.print(Padding(_data_coverage_tree(state, Tree), (0, 0, 0, 2)))
     _render_kv_block(
         console,
-        _terminal_data_coverage_rows(
+        _data_coverage_status_rows(
             activities,
-            steps,
-            state.measures,
-            state.blood_pressure_records,
             training_load_metrics,
-            sleep,
-            _sleep_expected(state.historical_sleep_records, target_date),
         ),
         indent=2,
         theme=theme,
@@ -571,12 +575,15 @@ def render_daily_terminal_context(
 
 def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
     warnings: list[str] = []
+    activity_source = _context_source(config, ("activity",), warnings)
     workout_source = _context_source(config, ("activity", "workout"), warnings)
     sets_source = _context_source(config, ("activity", "workout", "sets"), warnings)
     load_source = _context_source(config, ("activity", "workout", "load"), warnings)
+    measurement_domain_source = _context_source(config, ("measurement",), warnings)
     step_source = _context_source(config, ("measurement", "steps"), warnings)
     measurement_source = _context_source(config, ("measurement", "weight"), warnings)
     blood_pressure_source = _context_source(config, ("measurement", "blood_pressure"), warnings)
+    recovery_source = _context_source(config, ("recovery",), warnings)
     sleep_source = _context_source(config, ("recovery", "sleep"), warnings)
 
     all_workout_activities = _read_context_activities(
@@ -653,6 +660,9 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
         measurement_source=measurement_source or "",
         blood_pressure_source=blood_pressure_source or "",
         sleep_source=sleep_source or "",
+        activity_source=activity_source or "",
+        measurement_domain_source=measurement_domain_source or "",
+        recovery_source=recovery_source or "",
         workout_source=workout_source or "",
         load_source=load_source or "",
         sets_source=sets_source or "",
@@ -667,7 +677,7 @@ def _read_context_activities(
     path: tuple[str, ...],
     warnings: list[str],
 ) -> list[NormalizedActivity]:
-    if source is None:
+    if source is None or source == "none":
         return []
     source_path = {
         "withings": config.withings.workouts_csv,
@@ -704,7 +714,7 @@ def _read_context_sets(
     source: str | None,
     warnings: list[str],
 ) -> list[dict[str, str]]:
-    if source is None:
+    if source is None or source == "none":
         return []
     if source != "hevy":
         _context_warning(warnings, f"context.activity.workout.sets source {source!r} has no set reader; skipping.")
@@ -720,7 +730,7 @@ def _read_context_measures(
     source: str | None,
     warnings: list[str],
 ) -> list[dict[str, str]]:
-    if source is None:
+    if source is None or source == "none":
         return []
     if source != "withings":
         _context_warning(warnings, f"context.measurement.weight source {source!r} has no measurement reader; skipping.")
@@ -736,7 +746,7 @@ def _read_context_steps(
     source: str | None,
     warnings: list[str],
 ) -> list[dict[str, str]]:
-    if source is None:
+    if source is None or source == "none":
         return []
     path = {
         "withings": config.withings.activity_csv,
@@ -756,7 +766,7 @@ def _read_context_sleep(
     source: str | None,
     warnings: list[str],
 ) -> list[dict[str, str]]:
-    if source is None:
+    if source is None or source == "none":
         return []
     path = {
         "withings": config.withings.sleep_csv,
@@ -778,8 +788,16 @@ def _read_context_blood_pressure(
     source: str | None,
     warnings: list[str],
 ) -> list[dict[str, str]]:
-    if source is None:
+    if source is None or source == "none":
         return []
+    if source == "withings":
+        if not config.withings.measures_csv.exists():
+            _context_warning(
+                warnings,
+                f"context.measurement.blood_pressure source {source!r} file is missing: {config.withings.measures_csv}",
+            )
+            return []
+        return read_withings_blood_pressure(config.withings.measures_csv)
     if source != "vitalsync":
         _context_warning(warnings, f"context.measurement.blood_pressure source {source!r} has no blood pressure reader; skipping.")
         return []
@@ -827,6 +845,41 @@ def read_vitalsync_blood_pressure(path: Path) -> list[dict[str, str]]:
 
     with path.open(encoding="utf-8", newline="") as csv_file:
         return list(csv.DictReader(csv_file))
+
+
+def read_withings_blood_pressure(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        measure_rows = list(csv.DictReader(csv_file))
+    grouped: dict[tuple[str, str], dict[str, str]] = {}
+    for row in measure_rows:
+        type_name = row.get("type_name", "")
+        if type_name not in {"systolic_blood_pressure", "diastolic_blood_pressure"}:
+            continue
+        key = (row.get("grpid", ""), row.get("datetime_local", ""))
+        record = grouped.setdefault(
+            key,
+            {
+                "source": "withings",
+                "source_id": row.get("grpid", ""),
+                "date": row.get("date", ""),
+                "datetime_local": row.get("datetime_local", ""),
+            },
+        )
+        if type_name == "systolic_blood_pressure":
+            record["systolic_mmHg"] = _integer_measure_value(row.get("value", ""))
+        else:
+            record["diastolic_mmHg"] = _integer_measure_value(row.get("value", ""))
+    return sorted(
+        [
+            record
+            for record in grouped.values()
+            if record.get("systolic_mmHg") and record.get("diastolic_mmHg")
+        ],
+        key=lambda row: (row.get("datetime_local", ""), row.get("source_id", "")),
+    )
 
 
 def read_withings_activities(path: Path) -> list[dict[str, str]]:
@@ -1140,10 +1193,7 @@ def _render_daily_state(state: DailyState) -> str:
         [
             "## Data Coverage",
             "",
-            f"- Workout source: {_activity_sources(primary_today_activities)}",
-            f"- Step source: {_step_source_label(steps, state.step_records, state.step_source)}",
-            f"- Body source: {_body_source_label(measures, state.blood_pressure_records, state.measurement_source, state.blood_pressure_source)}",
-            f"- Sleep source: {_sleep_source_label(sleep)}",
+            *_data_coverage_markdown_lines(state),
             f"- Activity count: {len(primary_today_activities)} primary",
             *(
                 [
@@ -1153,7 +1203,6 @@ def _render_daily_state(state: DailyState) -> str:
                 if training_load_metrics is not None
                 else []
             ),
-            f"- Missing or partial data: {_missing_data_summary(steps, measures, primary_today_activities, sleep, _sleep_expected(state.historical_sleep_records, target_date))}",
             "",
             "## Machine Handoff",
             "",
@@ -1910,6 +1959,8 @@ def _body_kv_rows(
         "bone_mass",
         "height",
         "type_4",
+        "diastolic_blood_pressure",
+        "systolic_blood_pressure",
     }
     rows = [
         (
@@ -1967,7 +2018,19 @@ def _blood_pressure_value(record: dict[str, str]) -> str:
 
 def _blood_pressure_clock_time(value: str) -> str:
     parsed = _parse_timestamp(value)
-    return parsed.strftime("%H:%M") if parsed is not None else ""
+    if parsed is not None:
+        return parsed.strftime("%H:%M")
+    try:
+        return datetime.fromisoformat(value).strftime("%H:%M")
+    except ValueError:
+        return ""
+
+
+def _integer_measure_value(value: str) -> str:
+    try:
+        return str(round(float(value)))
+    except ValueError:
+        return value
 
 
 def _latest_measures_by_type(measures: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -2061,27 +2124,6 @@ def _compact_body_fat_value(measures: dict[str, dict[str, str]]) -> str:
     return f"{fat_ratio} ({fat_mass_value:.2f} kg)"
 
 
-def _missing_data_summary(
-    steps: int | None,
-    measures: list[dict[str, str]],
-    activities: list[NormalizedActivity],
-    sleep: dict[str, str] | None = None,
-    sleep_expected: bool = False,
-) -> str:
-    missing: list[str] = []
-    if steps is None:
-        missing.append("steps unavailable")
-    if not measures:
-        missing.append("body measures unavailable")
-    if not activities:
-        missing.append("no activities logged")
-    if sleep_expected and sleep is None:
-        missing.append("sleep unavailable")
-    if not missing:
-        return "None"
-    return "; ".join(missing)
-
-
 def _record_source_label(records: list[dict[str, str]]) -> str:
     sources = sorted(
         {
@@ -2120,22 +2162,87 @@ def _body_source_label(
     return ", ".join(sources) if sources else "None"
 
 
-def _terminal_data_coverage_rows(
-    activities: list[NormalizedActivity],
-    steps: int | None,
-    measures: list[dict[str, str]],
-    blood_pressure_records: list[dict[str, str]],
-    training_load: TrainingLoadMetrics | None,
-    sleep: dict[str, str] | None,
-    sleep_expected: bool,
-) -> list[tuple[str, str]]:
-    rows = [
-        ("Workout source", _activity_sources(activities)),
-        ("Step source", "Steps" if steps is not None else "None"),
-        ("Body source", _body_source_label(measures, blood_pressure_records)),
-        ("Sleep source", _sleep_source_label(sleep)),
-        ("Activity count", f"{len(activities)} primary"),
+CoverageNode = tuple[str, str, list["CoverageNode"]]
+
+
+def _data_coverage_nodes(state: DailyState) -> list[CoverageNode]:
+    activity_source = state.activity_source or BUILTIN_CONTEXT_DEFAULTS[("activity",)]
+    workout_source = state.workout_source or BUILTIN_CONTEXT_DEFAULTS[("activity", "workout")]
+    sets_source = state.sets_source or BUILTIN_CONTEXT_DEFAULTS[("activity", "workout", "sets")]
+    load_source = state.load_source or BUILTIN_CONTEXT_DEFAULTS[("activity", "workout", "load")]
+    workout_children: list[CoverageNode] = []
+    if sets_source != workout_source:
+        workout_children.append(("Sets", sets_source, []))
+    if load_source != workout_source:
+        workout_children.append(("Load", load_source, []))
+    activity_children: list[CoverageNode] = []
+    if workout_source != activity_source or workout_children:
+        activity_children.append(
+            (
+                "Workout",
+                workout_source if workout_source != activity_source else "",
+                workout_children,
+            )
+        )
+
+    measurement_source = state.measurement_domain_source or BUILTIN_CONTEXT_DEFAULTS[("measurement",)]
+    measurement_children: list[CoverageNode] = []
+    step_source = state.step_source or BUILTIN_CONTEXT_DEFAULTS[("measurement", "steps")]
+    blood_pressure_source = state.blood_pressure_source or BUILTIN_CONTEXT_DEFAULTS[("measurement", "blood_pressure")]
+    if step_source != measurement_source:
+        measurement_children.append(("Steps", step_source, []))
+    if blood_pressure_source != measurement_source:
+        measurement_children.append(("Blood Pressure", blood_pressure_source, []))
+
+    recovery_source = state.recovery_source or BUILTIN_CONTEXT_DEFAULTS[("recovery",)]
+    recovery_children: list[CoverageNode] = []
+    sleep_source = state.sleep_source or BUILTIN_CONTEXT_DEFAULTS[("recovery", "sleep")]
+    if sleep_source != recovery_source:
+        recovery_children.append(("Sleep", sleep_source, []))
+
+    return [
+        ("Activity", activity_source, activity_children),
+        ("Measurement", measurement_source, measurement_children),
+        ("Recovery", recovery_source, recovery_children),
     ]
+
+
+def _data_coverage_markdown_lines(state: DailyState) -> list[str]:
+    lines: list[str] = []
+    for node in _data_coverage_nodes(state):
+        _append_coverage_markdown_node(lines, node, indent=0)
+    return lines
+
+
+def _append_coverage_markdown_node(lines: list[str], node: CoverageNode, *, indent: int) -> None:
+    label, source, children = node
+    prefix = "  " * indent
+    suffix = f": {_source_label(source)}" if source else ""
+    lines.append(f"{prefix}- {label}{suffix}")
+    for child in children:
+        _append_coverage_markdown_node(lines, child, indent=indent + 1)
+
+
+def _data_coverage_tree(state: DailyState, tree_type: Any) -> Any:
+    root = tree_type("Context sources")
+    for node in _data_coverage_nodes(state):
+        _add_coverage_tree_node(root, node)
+    return root
+
+
+def _add_coverage_tree_node(parent: Any, node: CoverageNode) -> None:
+    label, source, children = node
+    suffix = f": {_source_label(source)}" if source else ""
+    child = parent.add(f"{label}{suffix}")
+    for nested in children:
+        _add_coverage_tree_node(child, nested)
+
+
+def _data_coverage_status_rows(
+    activities: list[NormalizedActivity],
+    training_load: TrainingLoadMetrics | None,
+) -> list[tuple[str, str]]:
+    rows = [("Activity count", f"{len(activities)} primary")]
     if training_load is not None:
         rows.append(
             (
@@ -2143,18 +2250,6 @@ def _terminal_data_coverage_rows(
                 _training_load_history_status(training_load.history_label),
             )
         )
-    rows.append(
-        (
-            "Missing data",
-            _missing_data_summary(
-                steps,
-                measures,
-                activities,
-                sleep,
-                sleep_expected,
-            ),
-        )
-    )
     return rows
 
 

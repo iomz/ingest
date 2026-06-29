@@ -479,7 +479,7 @@ class ContextTest(unittest.TestCase):
 
         self.assertIn("## Body", content)
         self.assertIn("| Blood pressure | 121/79 mmHg · 07:30 |", content)
-        self.assertIn("- Body source: Vitalsync", content)
+        self.assertIn("  - Blood Pressure: Vitalsync", content)
 
     def test_renders_vitalsync_blood_pressure_with_withings_body_measures(self) -> None:
         content = render_daily_context(
@@ -501,7 +501,8 @@ class ContextTest(unittest.TestCase):
 
         self.assertIn("| Weight | 99.00 kg / fat Unknown / muscle Unknown |", content)
         self.assertIn("| Blood pressure | 121/79 mmHg · 07:30 |", content)
-        self.assertIn("- Body source: Withings, Vitalsync", content)
+        self.assertIn("- Measurement: Withings", content)
+        self.assertIn("  - Blood Pressure: Vitalsync", content)
 
     def test_rounds_bmr_to_nearest_integer(self) -> None:
         content = render_daily_context(
@@ -861,7 +862,7 @@ class ContextTest(unittest.TestCase):
             ],
         )
 
-        self.assertIn("- Workout source: Withings", content)
+        self.assertIn("- Activity: Suunto", content)
         self.assertIn("- Activity count: 1 primary", content)
         self.assertIn("Outdoor Walk", content)
         self.assertNotIn("Duplicate Walk", content)
@@ -1146,7 +1147,7 @@ class ContextTest(unittest.TestCase):
                 (
                     f'[app]\ndata_dir = "{data_dir}"\n\n'
                     "[context.activity]\nworkout = \"withings\"\n\n"
-                    "[context.measurement]\ndefault = \"withings\"\nsteps = \"withings\"\n\n"
+                    "[context.measurement]\ndefault = \"withings\"\nsteps = \"withings\"\nblood_pressure = \"withings\"\n\n"
                     "[context.recovery]\nsleep = \"withings\"\n"
                 ),
                 encoding="utf-8",
@@ -1159,6 +1160,8 @@ class ContextTest(unittest.TestCase):
                         "grpid,date,datetime_local,type,type_name,value,unit",
                         "1,2026-05-29,2026-05-29T06:00:00,1,weight,70.50,kg",
                         "2,2026-05-28,2026-05-28T06:00:00,1,weight,71.00,kg",
+                        "3,2026-05-29,2026-05-29T07:15:00,9,diastolic_blood_pressure,79,mmHg",
+                        "3,2026-05-29,2026-05-29T07:15:00,10,systolic_blood_pressure,121,mmHg",
                     ]
                 )
                 + "\n",
@@ -1197,9 +1200,8 @@ class ContextTest(unittest.TestCase):
             content = written.read_text(encoding="utf-8")
             self.assertIn("withings:w1", content)
             self.assertIn("withings:w2", content)
-            self.assertIn("- Workout source: Withings", content)
-            self.assertIn("- Step source: Withings", content)
-            self.assertIn("- Body source: Withings", content)
+            self.assertIn("  - Workout: Withings", content)
+            self.assertIn("- Measurement: Withings", content)
             self.assertIn("- Activity count: 2 primary", content)
             self.assertIn("| Movement | 3,456 steps · 2.10 km walk |", content)
             self.assertIn(
@@ -1209,6 +1211,7 @@ class ContextTest(unittest.TestCase):
             )
             self.assertNotIn("withings:w0", content)
             self.assertIn("| Weight | 70.50 kg |", content)
+            self.assertIn("| Blood pressure | 121/79 mmHg · 07:15 |", content)
             self.assertNotIn("71.00", content)
 
     def test_renders_withings_sleep_on_local_wake_date(self) -> None:
@@ -1248,7 +1251,7 @@ class ContextTest(unittest.TestCase):
             self.assertNotIn("| Awake count | 2 |", content)
             self.assertNotIn("| Sleep score | 81 |", content)
             self.assertNotIn("| Sleep efficiency | 96% |", content)
-            self.assertIn("- Sleep source: Withings", content)
+            self.assertIn("  - Sleep: Withings", content)
             self.assertIn("Sleep: 6h42m, 23:46–06:28, source Withings.", content)
             self.assertNotIn("2026-06-24T00:46", content)
             self.assertNotIn("readiness", content.lower())
@@ -1282,7 +1285,7 @@ class ContextTest(unittest.TestCase):
             content = written.read_text(encoding="utf-8")
 
             self.assertIn("| Sleep | 6h30m · 23:00–06:30 |", content)
-            self.assertIn("- Sleep source: Vitalsync", content)
+            self.assertIn("- Recovery: Vitalsync", content)
             self.assertIn("Sleep: 6h30m, 23:00–06:30, source Vitalsync.", content)
 
     def test_invalid_context_source_warns_and_skips_metric(self) -> None:
@@ -1310,7 +1313,7 @@ class ContextTest(unittest.TestCase):
                 written = generate_daily_context(config, date(2026, 6, 25))
             content = written.read_text(encoding="utf-8")
 
-            self.assertIn("- Step source: None", content)
+            self.assertIn("  - Steps: None", content)
             self.assertIn("source 'viatalsync' is not supported", stderr.getvalue())
 
     def test_uses_only_vitalsync_sleep_when_enabled(self) -> None:
@@ -1357,7 +1360,7 @@ class ContextTest(unittest.TestCase):
             content = written.read_text(encoding="utf-8")
 
             self.assertIn("| Sleep | 6h30m · 23:00–06:30 |", content)
-            self.assertIn("- Sleep source: Vitalsync", content)
+            self.assertIn("- Recovery: Vitalsync", content)
             self.assertNotIn("8h00m", content)
 
     def test_enabled_vitalsync_discards_withings_sleep_when_vitalsync_has_no_row(self) -> None:
@@ -1387,7 +1390,7 @@ class ContextTest(unittest.TestCase):
             content = written.read_text(encoding="utf-8")
 
             self.assertNotIn("| Sleep |", content)
-            self.assertIn("- Sleep source: None", content)
+            self.assertIn("- Recovery: Vitalsync", content)
 
     def test_missing_sleep_does_not_crash_and_is_only_missing_after_history_starts(self) -> None:
         content_without_history = render_daily_context(date(2026, 6, 25), [])
@@ -1404,10 +1407,10 @@ class ContextTest(unittest.TestCase):
             ],
         )
 
-        self.assertIn("- Sleep source: None", content_without_history)
+        self.assertIn("- Recovery: Vitalsync", content_without_history)
         self.assertNotIn("sleep unavailable", content_without_history)
-        self.assertIn("- Sleep source: None", content_with_history)
-        self.assertIn("sleep unavailable", content_with_history)
+        self.assertIn("- Recovery: Vitalsync", content_with_history)
+        self.assertNotIn("sleep unavailable", content_with_history)
 
     def test_terminal_context_renders_sleep_snapshot_and_coverage(self) -> None:
         sleep = {
@@ -1440,7 +1443,7 @@ class ContextTest(unittest.TestCase):
 
         content = output.getvalue()
         self.assertIn("Sleep     6h42m / 23:46–06:28", content)
-        self.assertIn("Sleep source    Withings", content)
+        self.assertIn("Recovery: Vitalsync", content)
         self.assertNotIn("Awake time   0h15m", content)
 
     def test_renders_zero_withings_steps_when_daily_activity_row_is_zero(self) -> None:
@@ -1584,7 +1587,7 @@ class ContextTest(unittest.TestCase):
 
             content = written.read_text(encoding="utf-8")
             self.assertNotIn("category_16", content)
-            self.assertIn("- Workout source: None", content)
+            self.assertIn("- Activity: Suunto", content)
 
 
 if __name__ == "__main__":

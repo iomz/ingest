@@ -27,6 +27,8 @@ BODY_MEASURE_TYPES = {
     5: ("fat_free_mass", "kg"),
     6: ("fat_ratio", "%"),
     8: ("fat_mass_weight", "kg"),
+    9: ("diastolic_blood_pressure", "mmHg"),
+    10: ("systolic_blood_pressure", "mmHg"),
     76: ("muscle_mass", "kg"),
     77: ("hydration", "kg"),
     88: ("bone_mass", "kg"),

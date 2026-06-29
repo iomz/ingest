@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import sys
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +16,13 @@ from ingest.plugins.withings import SLEEP_FIELDS, merge_sleep_rows
 TIMEOUT_SECONDS = 30
 SLEEP_ANALYSIS = "sleep_analysis"
 BLOOD_PRESSURE = "blood_pressure"
+STEP_COUNT = "step_count"
+STEP_FIELDS = [
+    "source",
+    "date",
+    "step_count",
+    "distance_km",
+]
 BP_FIELDS = [
     "source",
     "source_id",
@@ -44,6 +52,7 @@ class VitalsyncHTTPError(SystemExit):
 
 def sync(config: AppConfig, *, end_date: date | None = None) -> list[Path]:
     if not config.vitalsync.enabled:
+        print("Vitalsync sync skipped: plugin.vitalsync.enabled is false.", file=sys.stderr)
         return []
     target_end_date = end_date or datetime.now(config.timezone).date()
     start_date = _sync_start_date(config, target_end_date)
@@ -76,6 +85,15 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
             end_date=end_date,
             local_timezone=config.timezone,
         )
+        step_records, access_token = fetch_records_with_refresh(
+            session,
+            config,
+            access_token,
+            sample_type=STEP_COUNT,
+            start_date=start_date,
+            end_date=end_date,
+            local_timezone=config.timezone,
+        )
 
     written_paths: list[Path] = []
     raw_path = write_json_file(config.vitalsync.raw_dir / raw_name, {"records": sleep_records})
@@ -85,14 +103,13 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
         local_timezone=config.timezone,
         source_bundle_id=config.vitalsync.source_bundle_id,
     )
-    if rows:
-        existing_rows = read_sleep_rows(config.vitalsync.sleep_csv)
-        sleep_path = write_csv_file(
-            config.vitalsync.sleep_csv,
-            merge_sleep_rows(existing_rows, rows),
-            SLEEP_FIELDS,
-        )
-        written_paths.append(sleep_path)
+    existing_rows = read_sleep_rows(config.vitalsync.sleep_csv)
+    sleep_path = write_csv_file(
+        config.vitalsync.sleep_csv,
+        merge_sleep_rows(existing_rows, rows),
+        SLEEP_FIELDS,
+    )
+    written_paths.append(sleep_path)
 
     blood_pressure_raw_name = raw_name.replace("sleep_analysis", "blood_pressure")
     blood_pressure_raw_path = write_json_file(
@@ -104,14 +121,31 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
         blood_pressure_records,
         local_timezone=config.timezone,
     )
-    if blood_pressure_rows:
-        existing_blood_pressure_rows = read_blood_pressure_rows(config.vitalsync.blood_pressure_csv)
-        blood_pressure_path = write_csv_file(
-            config.vitalsync.blood_pressure_csv,
-            merge_blood_pressure_rows(existing_blood_pressure_rows, blood_pressure_rows),
-            BP_FIELDS,
-        )
-        written_paths.append(blood_pressure_path)
+    existing_blood_pressure_rows = read_blood_pressure_rows(config.vitalsync.blood_pressure_csv)
+    blood_pressure_path = write_csv_file(
+        config.vitalsync.blood_pressure_csv,
+        merge_blood_pressure_rows(existing_blood_pressure_rows, blood_pressure_rows),
+        BP_FIELDS,
+    )
+    written_paths.append(blood_pressure_path)
+
+    step_raw_name = raw_name.replace("sleep_analysis", "step_count")
+    step_raw_path = write_json_file(
+        config.vitalsync.raw_dir / step_raw_name,
+        {"records": step_records},
+    )
+    written_paths.append(step_raw_path)
+    step_rows = normalize_step_count_records(
+        step_records,
+        local_timezone=config.timezone,
+    )
+    existing_step_rows = read_step_rows(config.vitalsync.steps_csv)
+    step_path = write_csv_file(
+        config.vitalsync.steps_csv,
+        merge_step_rows(existing_step_rows, step_rows),
+        STEP_FIELDS,
+    )
+    written_paths.append(step_path)
     return written_paths
 
 
@@ -378,6 +412,37 @@ def normalize_blood_pressure_records(
     return sorted(rows, key=lambda row: (str(row["datetime_local"]), str(row["source_id"])))
 
 
+def normalize_step_count_records(
+    records: list[dict[str, Any]],
+    *,
+    local_timezone: ZoneInfo,
+) -> list[dict[str, Any]]:
+    steps_by_date: dict[str, int] = {}
+    for record in records:
+        if record.get("sample_type") != STEP_COUNT:
+            continue
+        start_time = _parse_timestamp(record.get("start_time"))
+        if start_time is None:
+            continue
+        value = record.get("value")
+        if not isinstance(value, dict):
+            continue
+        quantity = _optional_int(value.get("quantity"))
+        if quantity is None:
+            continue
+        local_date = start_time.astimezone(local_timezone).date().isoformat()
+        steps_by_date[local_date] = steps_by_date.get(local_date, 0) + quantity
+    return [
+        {
+            "source": "vitalsync",
+            "date": local_date,
+            "step_count": str(step_count),
+            "distance_km": "",
+        }
+        for local_date, step_count in sorted(steps_by_date.items())
+    ]
+
+
 def read_sleep_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -386,6 +451,13 @@ def read_sleep_rows(path: Path) -> list[dict[str, str]]:
 
 
 def read_blood_pressure_rows(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
+def read_step_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
     with path.open(encoding="utf-8", newline="") as csv_file:
@@ -409,11 +481,22 @@ def merge_blood_pressure_rows(
     )
 
 
+def merge_step_rows(
+    existing_rows: list[dict[str, Any]],
+    new_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in [*existing_rows, *new_rows]:
+        rows_by_key[(str(row.get("source", "")), str(row.get("date", "")))] = row
+    return sorted(rows_by_key.values(), key=lambda row: (str(row.get("date", "")), str(row.get("source", ""))))
+
+
 def _sync_start_date(config: AppConfig, end_date: date) -> date:
     fallback = end_date - timedelta(days=config.vitalsync.days - 1)
     latest_dates = [
         latest_sleep_date(read_sleep_rows(config.vitalsync.sleep_csv)),
         latest_blood_pressure_date(read_blood_pressure_rows(config.vitalsync.blood_pressure_csv)),
+        latest_step_date(read_step_rows(config.vitalsync.steps_csv)),
     ]
     return min(value or fallback for value in latest_dates)
 
@@ -429,6 +512,16 @@ def latest_sleep_date(rows: Iterable[dict[str, str]]) -> date | None:
 
 
 def latest_blood_pressure_date(rows: Iterable[dict[str, str]]) -> date | None:
+    dates: list[date] = []
+    for row in rows:
+        try:
+            dates.append(date.fromisoformat(row.get("date", "")))
+        except ValueError:
+            pass
+    return max(dates) if dates else None
+
+
+def latest_step_date(rows: Iterable[dict[str, str]]) -> date | None:
     dates: list[date] = []
     for row in rows:
         try:
@@ -486,6 +579,13 @@ def _optional_pressure(value: Any) -> str:
     except (TypeError, ValueError):
         return ""
     return str(round(number))
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return round(float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_expires_at(value: str) -> datetime | None:
