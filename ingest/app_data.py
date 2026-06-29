@@ -27,8 +27,8 @@ def resolve_config_path(override: Path | str | None = None) -> Path:
 
     xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
     if xdg_config_home:
-        return Path(xdg_config_home).expanduser() / f"{APP_NAME}.toml"
-    return Path("~/.config").expanduser() / f"{APP_NAME}.toml"
+        return Path(xdg_config_home).expanduser() / APP_NAME / "config.toml"
+    return Path("~/.config").expanduser() / APP_NAME / "config.toml"
 
 
 def default_config_path() -> Path:

@@ -178,7 +178,13 @@ class CliTest(unittest.TestCase):
             root = Path(temp_dir)
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
-            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[context.activity]\nworkout = \"withings\"\n"
+                ),
+                encoding="utf-8",
+            )
             withings_csv_path = data_dir / "withings/body_measures.csv"
             withings_csv_path.parent.mkdir(parents=True)
             withings_csv_path.write_text(
@@ -231,7 +237,13 @@ class CliTest(unittest.TestCase):
             root = Path(temp_dir)
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
-            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[context.activity]\nworkout = \"hevy\"\n"
+                ),
+                encoding="utf-8",
+            )
 
             stdout = io.StringIO()
             with (
@@ -256,7 +268,13 @@ class CliTest(unittest.TestCase):
             root = Path(temp_dir)
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
-            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[context.activity]\nworkout = \"hevy\"\n"
+                ),
+                encoding="utf-8",
+            )
             withings_csv_path = data_dir / "withings/body_measures.csv"
             withings_csv_path.parent.mkdir(parents=True)
             withings_csv_path.write_text(
@@ -303,7 +321,13 @@ class CliTest(unittest.TestCase):
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
             export_path = root / "hevy.csv"
-            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[context.activity]\nworkout = \"withings\"\n"
+                ),
+                encoding="utf-8",
+            )
             export_path.write_text(
                 "\n".join(
                     [
@@ -331,7 +355,13 @@ class CliTest(unittest.TestCase):
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
             output_path = data_dir / "hevy/workouts.csv"
-            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[context.activity]\nworkout = \"withings\"\n"
+                ),
+                encoding="utf-8",
+            )
 
             stdout = io.StringIO()
             with (
@@ -351,7 +381,13 @@ class CliTest(unittest.TestCase):
             config_path = root / "ingest.toml"
             withings_path = data_dir / "withings/body_measures.csv"
             hevy_path = data_dir / "hevy/workouts.csv"
-            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[context.activity]\nworkout = \"withings\"\n"
+                ),
+                encoding="utf-8",
+            )
 
             stdout = io.StringIO()
             with (
@@ -584,7 +620,13 @@ class CliTest(unittest.TestCase):
             root = Path(temp_dir)
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
-            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[context.activity]\nworkout = \"withings\"\n"
+                ),
+                encoding="utf-8",
+            )
             withings_csv_path = data_dir / "withings/body_measures.csv"
             withings_csv_path.parent.mkdir(parents=True)
             withings_csv_path.write_text(
@@ -635,7 +677,13 @@ class CliTest(unittest.TestCase):
             root = Path(temp_dir)
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
-            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[context.activity]\nworkout = \"withings\"\n"
+                ),
+                encoding="utf-8",
+            )
             withings_csv_path = data_dir / "withings/body_measures.csv"
             withings_csv_path.parent.mkdir(parents=True)
             withings_csv_path.write_text(

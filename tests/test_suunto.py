@@ -811,6 +811,12 @@ command = "{command_path}"
                 "date,step_count,distance_km\n2026-06-24,8949,6.10\n",
                 encoding="utf-8",
             )
+            vitalsync_dir = data_dir / "vitalsync"
+            vitalsync_dir.mkdir(parents=True)
+            (vitalsync_dir / "steps.csv").write_text(
+                "source,date,step_count,distance_km\nvitalsync,2026-06-24,8949,6.10\n",
+                encoding="utf-8",
+            )
             (withings_dir / "body_measures.csv").write_text(
                 "\n".join(
                     [
@@ -861,7 +867,7 @@ command = "{command_path}"
             self.assertNotIn("Walking TSS", content)
             self.assertNotIn("+1244%", content)
             self.assertIn("- Workout source: Suunto", content)
-            self.assertIn("- Step source: Withings", content)
+            self.assertIn("- Step source: Vitalsync", content)
             self.assertIn("- Body source: Withings", content)
             self.assertIn("- Activity count: 1 primary", content)
             self.assertIn(
@@ -869,7 +875,7 @@ command = "{command_path}"
                 content,
             )
             self.assertIn(
-                "Recorded 1 primary activity, 5.20 km walking, 69 min moving time, and 8,949 Withings steps.",
+                "Recorded 1 primary activity, 5.20 km walking, 69 min moving time, and 8,949 steps.",
                 content,
             )
             self.assertIn(

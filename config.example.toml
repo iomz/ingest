@@ -10,9 +10,33 @@ theme = "default"
 # Controls body-weight direction color only: "loss", "maintenance", or "gain".
 body_weight_goal = "maintenance"
 
+[context.activity]
+# Defaults favor Suunto for workouts because it has stronger duration,
+# distance, heart-rate, energy, and TSS telemetry than mirrored Withings rows.
+default = "suunto"
+
+[context.activity.workout]
+default = "suunto"
+# Hevy is set-level strength detail, not primary workout telemetry.
+sets = "hevy"
+# Training load metrics come from Suunto TSS.
+load = "suunto"
+
+[context.measurement]
+# Withings remains the body-composition source. Steps intentionally use
+# Vitalsync because Withings step totals have been unreliable.
+default = "withings"
+steps = "vitalsync"
+blood_pressure = "vitalsync"
+
+[context.recovery]
+# Vitalsync sleep is closest to Apple Health/Sleep Cycle source data.
+default = "vitalsync"
+sleep = "vitalsync"
+
 [withings]
 # Copy this file to your local config path and replace the placeholder values.
-# Store it as ${XDG_CONFIG_HOME:-~/.config}/ingest.toml, not in this repository.
+# Store it as ${XDG_CONFIG_HOME:-~/.config}/ingest/config.toml, not in this repository.
 client_id = ""
 client_secret = ""
 refresh_token = ""
@@ -60,6 +84,7 @@ expires_at = ""
 # Defaults to Sleep Cycle. Set to "" to include all sleep_analysis sources.
 source_bundle_id = "com.lexwarelabs.goodmorning"
 sleep_csv = "vitalsync/sleep.csv"
+steps_csv = "vitalsync/steps.csv"
 blood_pressure_csv = "vitalsync/blood_pressure.csv"
 raw_dir = "vitalsync/raw"
 

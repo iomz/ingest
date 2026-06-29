@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import contextlib
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -421,7 +422,7 @@ class ContextTest(unittest.TestCase):
         self.assertIn("| Weight | 70.50 kg | 70.50 kg | 70.50 kg | Stable |", content)
         self.assertIn("## Machine Handoff", content)
         self.assertIn(
-            "Recorded 2 primary activities, 75 min moving time, and unavailable Withings steps.",
+            "Recorded 2 primary activities, 75 min moving time, and unavailable steps.",
             content,
         )
         self.assertIn("- Run: Morning Run (5.00 km, 30 min)", content)
@@ -1141,7 +1142,15 @@ class ContextTest(unittest.TestCase):
             root = Path(temp_dir)
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
-            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[context.activity]\nworkout = \"withings\"\n\n"
+                    "[context.measurement]\ndefault = \"withings\"\nsteps = \"withings\"\n\n"
+                    "[context.recovery]\nsleep = \"withings\"\n"
+                ),
+                encoding="utf-8",
+            )
             withings_csv_path = data_dir / "withings/body_measures.csv"
             withings_csv_path.parent.mkdir(parents=True)
             withings_csv_path.write_text(
@@ -1208,7 +1217,10 @@ class ContextTest(unittest.TestCase):
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
             config_path.write_text(
-                f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n',
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\ntimezone = "Asia/Tokyo"\n\n'
+                    "[context.recovery]\nsleep = \"withings\"\n"
+                ),
                 encoding="utf-8",
             )
             withings_dir = data_dir / "withings"
@@ -1272,6 +1284,34 @@ class ContextTest(unittest.TestCase):
             self.assertIn("| Sleep | 6h30m · 23:00–06:30 |", content)
             self.assertIn("- Sleep source: Vitalsync", content)
             self.assertIn("Sleep: 6h30m, 23:00–06:30, source Vitalsync.", content)
+
+    def test_invalid_context_source_warns_and_skips_metric(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[context.measurement]\nsteps = \"viatalsync\"\n"
+                ),
+                encoding="utf-8",
+            )
+            withings_dir = data_dir / "withings"
+            withings_dir.mkdir(parents=True)
+            (withings_dir / "activity.csv").write_text(
+                "date,step_count,distance_km\n2026-06-25,10000,7.00\n",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                written = generate_daily_context(config, date(2026, 6, 25))
+            content = written.read_text(encoding="utf-8")
+
+            self.assertIn("- Step source: None", content)
+            self.assertIn("source 'viatalsync' is not supported", stderr.getvalue())
 
     def test_uses_only_vitalsync_sleep_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1464,7 +1504,13 @@ class ContextTest(unittest.TestCase):
             root = Path(temp_dir)
             data_dir = root / "app-data"
             config_path = root / "ingest.toml"
-            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            config_path.write_text(
+                (
+                    f'[app]\ndata_dir = "{data_dir}"\n\n'
+                    "[context.activity]\nworkout = \"withings\"\n"
+                ),
+                encoding="utf-8",
+            )
             config = load_config(config_path)
 
             written = generate_daily_context(config, date(2026, 5, 29))

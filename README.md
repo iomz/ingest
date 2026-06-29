@@ -17,14 +17,14 @@ Sources
   -> DailyState
   -> Rendered Context
   -> AI Review
-  -> Brain
 ```
 
 Current code fetches Withings body, activity, workout, and sleep-summary data,
 imports Hevy workout exports, fetches Vitalsync Apple Health sleep and blood
-pressure records, writes local records, builds a `DailyState`, and renders AI-readable daily
-context. Suunto activities can optionally be fetched through `suuntool`. Future
-OpenAI API calls and Brain vault writes belong after rendered context.
+pressure records, writes local records, builds a `DailyState`, and renders
+AI-readable daily context. Physical Context can read normalized Vitalsync steps
+from `vitalsync/steps.csv` when available. Suunto activities can optionally be
+fetched through `suuntool`.
 
 Sleep summaries are assigned to local wake date. Vitalsync starts with
 Sleep Cycle-derived `sleep_analysis` records and derives daily sleep summaries
@@ -60,9 +60,98 @@ estimated_deficit_kcal_per_day = (weight_change_kg * 7700) / 30
 ```
 
 Physical Context also computes ingest-defined CTL, ATL, and TSB from daily
-Suunto TSS history. See [docs/metrics.md](docs/metrics.md#training-load) for
-formula, end-of-report-date semantics, history maturity, source references, and
-limitations. Values include report date TSS and support planning following day.
+Suunto TSS history. Values include report date TSS and support planning
+following day.
+
+## Context Sources
+
+Physical Context source precedence is configured by metric domain under
+`[context]`. A lower-level setting overrides a higher-level `default`.
+
+```toml
+[context.activity]
+default = "suunto"
+
+[context.activity.workout]
+default = "suunto"
+sets = "hevy"
+load = "suunto"
+
+[context.measurement]
+default = "withings"
+steps = "vitalsync"
+blood_pressure = "vitalsync"
+
+[context.recovery]
+default = "vitalsync"
+sleep = "vitalsync"
+```
+
+Defaults favor Suunto for primary workouts because it has stronger distance,
+duration, activity type, heart-rate, energy, and TSS telemetry than mirrored
+Withings rows. Hevy is set-level strength detail, not primary workout
+telemetry. Training-load metrics use Suunto TSS.
+
+Withings remains the body-composition source. Vitalsync is the default for
+steps because Withings step totals have been unreliable. Vitalsync is also the
+default for sleep and blood pressure because those records are closest to Apple
+Health source data.
+
+Invalid or unavailable configured context sources emit warnings and skip that
+metric. Missing rows for a report date are treated as missing data, not config
+errors. Source CSVs remain unchanged.
+
+## Metric Semantics
+
+Physical Context assigns sleep to the wake date using the configured ingest
+timezone. Sleep appears in the Daily Snapshot and Machine Handoff, but does not
+get a detailed report section. Sleep remains separate from TSS, CTL, ATL, and
+TSB.
+
+Activity trend rows follow report date's primary activity type, selected by
+greatest total duration. Walking, running, cycling, and swimming use same-type
+distance when available and duration. Other activity types fall back to workout
+duration. A non-walking workout day does not emit a zero walking-distance trend.
+
+Workout trend columns show report date value, trailing 7-day total, and
+trailing 30-day total normalized to a weekly average. Non-activity days do not
+turn these metrics into per-day averages. Direction percentages are shown only
+when at least three same-activity sessions with that metric exist in the
+trailing 30 days. Weight, steps, and estimated-deficit trends retain daily or
+rolling-average units.
+
+Performance rows use distance-weighted aggregation: duration and distance are
+summed before pace or speed is calculated. Walking and running use `min/km`,
+swimming uses `min/100m`, and cycling uses `km/h`. Rows require positive
+distance and duration. Withings swimming distance remains excluded. Pace
+direction treats lower as faster, while cycling speed treats higher as faster.
+
+ingest calculates transparent training-load values from daily total Suunto TSS:
+
+```text
+alpha = 1 - exp(-1 / time_constant)
+EWMA_today = EWMA_previous + alpha * (daily_TSS - EWMA_previous)
+```
+
+CTL uses a 42-day time constant. ATL uses a 7-day time constant. TSB is CTL
+minus ATL. Missing days contribute TSS 0 so load decays on rest days.
+Calculation starts from zero before the earliest locally available TSS date.
+
+Physical Context reports CTL, ATL, and TSB at end of report date, after that
+date's TSS has been applied. Values are ingest-defined and are not guaranteed
+to match Suunto App internal values.
+
+History coverage is reported with training load:
+
+- fewer than 7 calendar days: ATL and TSB are warming up
+- 7 to fewer than 42 calendar days: CTL is warming up
+- 42 calendar days or more: training-load baseline is available
+
+TSS is activity-agnostic and appears with distance and duration under Workout,
+not under primary activity type. Report-date and rolling values sum TSS from
+configured load-source workouts. TSS uses same weekly columns. Fewer than three
+TSS-bearing workouts show `Baseline forming`; fewer than 42 days of available
+TSS history show `Training load history limited`.
 
 ## Commands
 
@@ -107,7 +196,7 @@ Profile > Settings > Export & Import Data > Export Data > Export Workouts.
 profile stored under the application data directory. On the first run, log in to
 Hevy in the opened browser window, then rerun the command.
 
-Suunto sync uses the user-managed [`suuntool`](https://github.com/tajchert/suuntool) command. Install it and run `suuntool login` separately, then enable `[suunto]` in `ingest.toml`. `suunto.command` accepts an absolute executable path and otherwise defaults to `suuntool` from PATH.
+Suunto sync uses the user-managed [`suuntool`](https://github.com/tajchert/suuntool) command. Install it and run `suuntool login` separately, then enable `[suunto]` in the config file. `suunto.command` accepts an absolute executable path and otherwise defaults to `suuntool` from PATH.
 
 Vitalsync sync fetches Apple Health records from the configured `vitalsync.base_url`. Enable `[vitalsync]` and register ingest with a Vitalsync pairing token:
 
@@ -129,7 +218,7 @@ ingest auth withings exchange-code --redirect-uri "https://your-registered-callb
 Repository contains code only:
 
 ```text
-ingest repository = source code, tests, docs, config templates
+ingest repository = source code, tests, config templates
 configuration file = credentials and local settings
 application data directory = telemetry, cache, generated files
 ```
@@ -137,15 +226,20 @@ application data directory = telemetry, cache, generated files
 Default config path:
 
 ```text
-${XDG_CONFIG_HOME:-~/.config}/ingest.toml
+${XDG_CONFIG_HOME:-~/.config}/ingest/config.toml
 ```
 
 Create local config:
 
 ```sh
-mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}"
-cp config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/ingest.toml"
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/ingest"
+cp config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/ingest/config.toml"
 ```
+
+When the default config file is missing, `ingest` creates the config directory
+and exits with the copy instruction. It does not write a placeholder
+`config.toml`; the file contains credentials and local source choices, so an
+explicit copy/edit step keeps first-run setup visible.
 
 `app.timezone` defines local report dates and interpretation of source
 timestamps without an explicit UTC offset. It defaults to `Asia/Tokyo`.
@@ -191,6 +285,11 @@ ${XDG_DATA_HOME:-~/.local/share}/ingest/
 ├── suunto/
 │   ├── raw/
 │   └── workouts.csv
+├── vitalsync/
+│   ├── raw/
+│   ├── sleep.csv
+│   ├── steps.csv
+│   └── blood_pressure.csv
 └── generated/
     └── daily_context.md
 ```
