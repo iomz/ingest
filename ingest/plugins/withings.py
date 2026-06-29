@@ -253,7 +253,7 @@ def _auth_withings(config: AppConfig, args: WithingsAuthArgs) -> None:
             )
     if not code:
         print(auth_url)
-        pasted = prompts.text("Paste Withings redirect URL or authorization code")
+        pasted = prompts.text("Paste Withings redirect URL")
         code = parse_authorization_code(pasted, expected_state=oauth_state)
     exchange_authorization_code(
         config,
@@ -274,7 +274,7 @@ def sync_unavailable_reason(config: AppConfig) -> str:
         return ""
     if config.withings.refresh_token and config.withings.client_id and config.withings.client_secret:
         return ""
-    return f"run `ingest auth withings exchange-code`; missing auth state at {config.withings.auth_state_path}"
+    return f"run `ingest auth withings`; missing auth state at {config.withings.auth_state_path}"
 
 
 manifest = PluginManifest(
@@ -519,6 +519,10 @@ def parse_authorization_code(value: str, *, expected_state: str = "") -> str:
         code = (query.get("code") or [""])[0]
         if code:
             return code
+        error = (query.get("error") or [""])[0]
+        raise SystemExit(f"Withings authorization failed: {error or 'missing authorization code'}")
+    if expected_state:
+        raise SystemExit("Paste the full Withings redirect URL so OAuth state can be verified.")
     return stripped
 
 

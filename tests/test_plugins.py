@@ -72,6 +72,17 @@ class PluginManifestTest(unittest.TestCase):
         finally:
             sys.modules.pop(module_name, None)
 
+    def test_manifest_callable_signature_mismatch_gives_clear_error(self) -> None:
+        module_name = "ingest.plugins.badsync"
+        module = types.ModuleType(module_name)
+        module.manifest = PluginManifest(name="badsync", provides=("activity.example",), sync=lambda: [])
+        sys.modules[module_name] = module
+        try:
+            with self.assertRaisesRegex(PluginLoadError, "manifest sync must accept 1 argument"):
+                load_plugin("badsync")
+        finally:
+            sys.modules.pop(module_name, None)
+
     def test_cli_core_does_not_define_plugin_specific_commands(self) -> None:
         root = Path(__file__).resolve().parents[1]
         cli_source = root.joinpath("ingest/cli.py").read_text(encoding="utf-8")

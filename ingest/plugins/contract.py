@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+import inspect
 from importlib import import_module
 from pathlib import Path
 from typing import Protocol
@@ -67,13 +68,21 @@ def load_plugin(name: str) -> PluginManifest:
         raise PluginLoadError(f"Plugin {name!r} manifest name mismatch: {manifest.name!r}.")
     if not manifest.provides:
         raise PluginLoadError(f"Plugin {name!r} manifest must declare provides.")
-    if manifest.sync is not None and not callable(manifest.sync):
-        raise PluginLoadError(f"Plugin {name!r} manifest sync must be callable or None.")
-    if manifest.sync_unavailable_reason is not None and not callable(manifest.sync_unavailable_reason):
-        raise PluginLoadError(f"Plugin {name!r} manifest sync_unavailable_reason must be callable or None.")
-    if manifest.register_cli is not None and not callable(manifest.register_cli):
-        raise PluginLoadError(f"Plugin {name!r} manifest register_cli must be callable or None.")
+    _validate_callable(name, "sync", manifest.sync, 1)
+    _validate_callable(name, "sync_unavailable_reason", manifest.sync_unavailable_reason, 1)
+    _validate_callable(name, "register_cli", manifest.register_cli, 1)
     return manifest
+
+
+def _validate_callable(name: str, field: str, value: Callable[..., object] | None, positional_args: int) -> None:
+    if value is None:
+        return
+    if not callable(value):
+        raise PluginLoadError(f"Plugin {name!r} manifest {field} must be callable or None.")
+    try:
+        inspect.signature(value).bind(*([object()] * positional_args))
+    except TypeError as exc:
+        raise PluginLoadError(f"Plugin {name!r} manifest {field} must accept {positional_args} argument.") from exc
 
 
 REPOSITORY_PLUGINS = ("hevy", "suunto", "vitalsync", "withings")
