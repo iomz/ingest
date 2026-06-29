@@ -27,6 +27,7 @@ load = "suunto"
 # Vitalsync because Withings step totals have been unreliable.
 default = "withings"
 steps = "vitalsync"
+# Supported: "vitalsync" or "withings".
 blood_pressure = "vitalsync"
 
 [context.recovery]
@@ -35,17 +36,22 @@ default = "vitalsync"
 sleep = "vitalsync"
 
 [plugin.hevy]
+enabled = true
 # Optional. Normalized output path for `ingest import hevy --csv ...`.
 workouts_csv = "hevy/workouts.csv"
 sets_csv = "hevy/sets.csv"
 # Optional. Raw downloaded CSV exports and dedicated browser profile.
 raw_dir = "hevy/raw"
 browser_dir = "hevy/browser"
+# Optional. Stored in plaintext in this config file. Prefer browser profile session when possible.
+email = ""
+password = ""
 login_timeout_seconds = 300
+login_poll_interval_seconds = 2
 
 [plugin.suunto]
-# Optional. Install and log in to suuntool separately, then enable this plugin.
-enabled = false
+enabled = true
+# Optional. Install and log in to suuntool separately.
 # Defaults to `suuntool` from PATH. Set an absolute path when needed.
 command = "suuntool"
 workouts_csv = "suunto/workouts.csv"
@@ -54,8 +60,8 @@ raw_dir = "suunto/raw"
 sync_days = 30
 
 [plugin.vitalsync]
+enabled = true
 # Optional. Apple Health records synced by the Vitalsync iOS app.
-enabled = false
 base_url = "https://receiver.example.com/vitalsync/v1"
 # Fill these with `ingest auth vitalsync register-client --pairing-token "<PAIRING_TOKEN>"`.
 client_id = ""
@@ -72,6 +78,7 @@ raw_dir = "vitalsync/raw"
 sync_days = 30
 
 [plugin.withings]
+enabled = true
 # Copy this file to your local config path and replace the placeholder values.
 # Store it as ${XDG_CONFIG_HOME:-~/.config}/ingest/config.toml, not in this repository.
 client_id = ""

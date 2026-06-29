@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from collections.abc import Awaitable, Callable
@@ -57,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_subparsers = sync_parser.add_subparsers(dest="command", required=True)
     sync_subparsers.add_parser("hevy", help="Sync Hevy workouts from CSV export.")
     sync_subparsers.add_parser("suunto", help="Sync Suunto activities through suuntool.")
-    sync_subparsers.add_parser("vitalsync", help="Sync Apple Health sleep records through Vitalsync.")
+    sync_subparsers.add_parser("vitalsync", help="Sync Apple Health records through Vitalsync.")
     sync_subparsers.add_parser("withings", help="Sync recent Withings measurements.")
     sync_subparsers.add_parser("all", help="Sync recent data from all configured sources.")
 
@@ -108,31 +110,35 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(args.config)
 
     if args.source == "backfill" and args.command == "withings":
-        written_paths = withings.backfill(config, start_date=args.from_date, end_date=args.end_date)
+        written_paths = _run_explicit_sync(
+            config,
+            "withings",
+            lambda: withings.backfill(config, start_date=args.from_date, end_date=args.end_date),
+        )
         for path in written_paths:
             print(path)
         return 0
 
     if args.source == "sync" and args.command == "withings":
-        written_paths = withings.sync(config)
+        written_paths = _run_explicit_sync(config, "withings", lambda: withings.sync(config))
         for path in written_paths:
             print(path)
         return 0
 
     if args.source == "sync" and args.command == "hevy":
-        written_paths = hevy.sync(config)
+        written_paths = _run_explicit_sync(config, "hevy", lambda: hevy.sync(config))
         for path in written_paths:
             print(path)
         return 0
 
     if args.source == "sync" and args.command == "suunto":
-        written_paths = suunto.sync(config)
+        written_paths = _run_explicit_sync(config, "suunto", lambda: suunto.sync(config))
         for path in written_paths:
             print(path)
         return 0
 
     if args.source == "sync" and args.command == "vitalsync":
-        written_paths = vitalsync.sync(config)
+        written_paths = _run_explicit_sync(config, "vitalsync", lambda: vitalsync.sync(config))
         for path in written_paths:
             print(path)
         return 0
@@ -231,14 +237,15 @@ def _sync_all(config: AppConfig) -> list[Path]:
 
 async def _sync_all_async(config: AppConfig) -> list[Path]:
     config_update_lock = anyio.Lock()
-    plugins: list[tuple[str, Callable[[], Awaitable[list[Path]]]]] = [
-        ("hevy", lambda: _run_sync_source(hevy.sync, config)),
-    ]
-    if config.suunto.enabled:
+    plugins: list[tuple[str, Callable[[], Awaitable[list[Path]]]]] = []
+    if _plugin_sync_ready(config, "hevy", explicit=False):
+        plugins.append(("hevy", lambda: _run_sync_source(hevy.sync, config)))
+    if _plugin_sync_ready(config, "suunto", explicit=False):
         plugins.append(("suunto", lambda: suunto.sync_async(config)))
-    if config.vitalsync.enabled:
+    if _plugin_sync_ready(config, "vitalsync", explicit=False):
         plugins.append(("vitalsync", lambda: _run_sync_source(vitalsync.sync, config, config_update_lock)))
-    plugins.append(("withings", lambda: _run_sync_source(withings.sync, config, config_update_lock)))
+    if _plugin_sync_ready(config, "withings", explicit=False):
+        plugins.append(("withings", lambda: _run_sync_source(withings.sync, config, config_update_lock)))
     results: dict[str, list[Path]] = {}
     errors: dict[str, Exception | SystemExit] = {}
 
@@ -257,6 +264,54 @@ async def _sync_all_async(config: AppConfig) -> list[Path]:
             raise errors[name]
 
     return [path for name, _sync_plugin in plugins for path in results[name]]
+
+
+def _run_explicit_sync(config: AppConfig, plugin: str, sync_func: Callable[[], list[Path]]) -> list[Path]:
+    if not _plugin_sync_ready(config, plugin, explicit=True):
+        return []
+    return sync_func()
+
+
+def _plugin_sync_ready(config: AppConfig, plugin: str, *, explicit: bool) -> bool:
+    if not _plugin_enabled(config, plugin):
+        if explicit:
+            _sync_warning(f"plugin.{plugin} is disabled; skipping.")
+        return False
+    reason = _plugin_unavailable_reason(config, plugin)
+    if reason:
+        _sync_warning(f"plugin.{plugin} unavailable; skipping: {reason}")
+        return False
+    return True
+
+
+def _plugin_enabled(config: AppConfig, plugin: str) -> bool:
+    return bool(getattr(getattr(config, plugin), "enabled"))
+
+
+def _plugin_unavailable_reason(config: AppConfig, plugin: str) -> str:
+    if not bool(getattr(getattr(config, plugin), "configured")):
+        return f"missing [plugin.{plugin}] config table"
+    if plugin == "withings":
+        if config.withings.access_token:
+            return ""
+        if config.withings.refresh_token and config.withings.client_id and config.withings.client_secret:
+            return ""
+        return "set plugin.withings.refresh_token with client_id/client_secret, or plugin.withings.access_token"
+    if plugin == "hevy":
+        return ""
+    if plugin == "suunto":
+        return "" if shutil.which(config.suunto.command) else f"command not found: {config.suunto.command}"
+    if plugin == "vitalsync":
+        if config.vitalsync.access_token:
+            return ""
+        if config.vitalsync.refresh_token and config.vitalsync.client_id:
+            return ""
+        return "set plugin.vitalsync.access_token, or refresh_token with client_id"
+    return f"unknown plugin {plugin!r}"
+
+
+def _sync_warning(message: str) -> None:
+    print(f"ingest sync warning: {message}", file=sys.stderr)
 
 
 async def _run_sync_source(

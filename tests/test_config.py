@@ -32,6 +32,7 @@ sync_days = 21
             self.assertEqual(str(config.timezone), "Asia/Tokyo")
             self.assertEqual(config.daily_context_path, root / "app-data/generated/daily_context.md")
             self.assertEqual(config.withings.client_id, "withings-client")
+            self.assertTrue(config.withings.enabled)
             self.assertEqual(config.withings.client_secret, "withings-secret")
             self.assertEqual(config.withings.measures_csv, root / "app-data/withings/body_measures.csv")
             self.assertEqual(config.withings.activity_csv, root / "app-data/withings/activity.csv")
@@ -40,16 +41,20 @@ sync_days = 21
             self.assertEqual(config.withings.raw_dir, root / "app-data/withings/raw")
             self.assertEqual(config.withings.days, 21)
             self.assertEqual(config.hevy.workouts_csv, root / "app-data/hevy/workouts.csv")
+            self.assertTrue(config.hevy.enabled)
             self.assertEqual(config.hevy.sets_csv, root / "app-data/hevy/sets.csv")
             self.assertEqual(config.hevy.raw_dir, root / "app-data/hevy/raw")
             self.assertEqual(config.hevy.browser_dir, root / "app-data/hevy/browser")
+            self.assertEqual(config.hevy.email, "")
+            self.assertEqual(config.hevy.password, "")
             self.assertEqual(config.hevy.login_timeout_seconds, 300)
-            self.assertFalse(config.suunto.enabled)
+            self.assertEqual(config.hevy.login_poll_interval_seconds, 2)
+            self.assertTrue(config.suunto.enabled)
             self.assertEqual(config.suunto.command, "suuntool")
             self.assertEqual(config.suunto.workouts_csv, root / "app-data/suunto/workouts.csv")
             self.assertEqual(config.suunto.raw_dir, root / "app-data/suunto/raw")
             self.assertEqual(config.suunto.days, 30)
-            self.assertFalse(config.vitalsync.enabled)
+            self.assertTrue(config.vitalsync.enabled)
             self.assertEqual(config.vitalsync.base_url, "https://api.sazanka.io/vitalsync/v1")
             self.assertEqual(config.vitalsync.sleep_csv, root / "app-data/vitalsync/sleep.csv")
             self.assertEqual(config.vitalsync.steps_csv, root / "app-data/vitalsync/steps.csv")
@@ -79,6 +84,27 @@ body_weight_goal = "loss"
 
             self.assertEqual(config.ui.theme, "colorful")
             self.assertEqual(config.ui.body_weight_goal, "loss")
+
+    def test_loads_hevy_login_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text(
+                """
+[plugin.hevy]
+email = "iori@example.com"
+password = "secret"
+login_timeout_seconds = 600
+login_poll_interval_seconds = 20
+""".strip(),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertEqual(config.hevy.email, "iori@example.com")
+            self.assertEqual(config.hevy.password, "secret")
+            self.assertEqual(config.hevy.login_timeout_seconds, 600)
+            self.assertEqual(config.hevy.login_poll_interval_seconds, 20)
 
     def test_rejects_unknown_ui_theme(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

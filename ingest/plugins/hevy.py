@@ -44,7 +44,12 @@ SET_FIELDS = [
 SETTINGS_URL = "https://hevy.com/settings"
 EXPORT_URL = "https://hevy.com/settings?export"
 EXPORT_TIMEOUT_MS = 30_000
-POLL_INTERVAL_SECONDS = 5
+LOGIN_EMAIL_SELECTOR = (
+    'input[label="Email or username"], input[label="Email"], '
+    'input[type="email"], input[name*="email" i], input[autocomplete="email"]'
+)
+LOGIN_PASSWORD_SELECTOR = 'input[label="Password"], input[type="password"], input[name*="password" i]'
+LOGIN_SUBMIT_SELECTOR = 'button[type="submit"]'
 
 
 def sync(config: AppConfig) -> list[Path]:
@@ -82,7 +87,7 @@ async def _export_workouts_csv(config: AppConfig, target_path: Path) -> Path:
         try:
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(EXPORT_URL, wait_until="domcontentloaded")
-            await _wait_for_export_ui(page, config.hevy.login_timeout_seconds)
+            await _wait_for_export_ui(page, config.hevy.login_timeout_seconds, config)
             download = await _trigger_workout_export(page)
             await download.save_as(target_path)
         finally:
@@ -115,17 +120,29 @@ def read_set_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(csv_file))
 
 
-async def _wait_for_export_ui(page: Any, timeout_seconds: int) -> None:
+async def _wait_for_export_ui(page: Any, timeout_seconds: int, config: AppConfig) -> None:
     deadline = asyncio.get_running_loop().time() + max(1, timeout_seconds)
     _status("Waiting for Hevy settings export controls. Log in in the opened browser if needed.")
+    auto_login_attempted = False
     while asyncio.get_running_loop().time() < deadline:
+        if await _has_export_ui(page):
+            _status("Found Hevy export controls.")
+            return
+        if await _has_login_ui(page):
+            if auto_login_attempted or not (config.hevy.email and config.hevy.password):
+                await _wait_briefly(page, config)
+                continue
+            auto_login_attempted = True
+            await _fill_login_form(page, config.hevy.email, config.hevy.password)
+            await _wait_briefly(page, config)
+            continue
         await _return_to_settings(page)
         await _scroll_settings(page)
         if await _has_export_ui(page):
             _status("Found Hevy export controls.")
             return
         _status(f"Still waiting for Hevy export controls at {page.url}")
-        await page.wait_for_timeout(POLL_INTERVAL_SECONDS * 1000)
+        await _wait_briefly(page, config)
     raise SystemExit(
         "Could not find Hevy export controls. Log in in the opened browser window, "
         "open Settings if needed, then rerun `ingest sync hevy`."
@@ -224,6 +241,44 @@ async def _has_export_ui(page: Any) -> bool:
         return await _first(_export_locator(page)).is_visible(timeout=1000)
     except Exception:
         return False
+
+
+async def _has_login_ui(page: Any) -> bool:
+    try:
+        email = _first(page.locator(LOGIN_EMAIL_SELECTOR))
+        password = _first(page.locator(LOGIN_PASSWORD_SELECTOR))
+        return await email.is_visible(timeout=1000) and await password.is_visible(timeout=1000)
+    except Exception:
+        return False
+
+
+async def _fill_login_form(page: Any, email: str, password: str) -> None:
+    _status("Filling Hevy login form from plugin.hevy.email/password.")
+    email_input = _first(page.locator(LOGIN_EMAIL_SELECTOR))
+    password_input = _first(page.locator(LOGIN_PASSWORD_SELECTOR))
+    await email_input.fill(email, timeout=EXPORT_TIMEOUT_MS)
+    await password_input.fill(password, timeout=EXPORT_TIMEOUT_MS)
+    await _click_login_submit(page)
+
+
+async def _click_login_submit(page: Any) -> None:
+    submit = _first(page.locator(LOGIN_SUBMIT_SELECTOR).filter(has_text=re.compile(r"log\s*in|login|sign\s*in", re.I)))
+    try:
+        await page.wait_for_function(
+            """selector => {
+                const element = document.querySelector(selector);
+                return element && getComputedStyle(element).pointerEvents !== "none";
+            }""",
+            arg=LOGIN_SUBMIT_SELECTOR,
+            timeout=EXPORT_TIMEOUT_MS,
+        )
+        await submit.click(timeout=EXPORT_TIMEOUT_MS)
+    except Exception:
+        await submit.click(timeout=EXPORT_TIMEOUT_MS, force=True)
+
+
+async def _wait_briefly(page: Any, config: AppConfig) -> None:
+    await page.wait_for_timeout(max(1, config.hevy.login_poll_interval_seconds) * 1000)
 
 
 def _status(message: str) -> None:

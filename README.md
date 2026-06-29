@@ -16,7 +16,7 @@ Sources
   -> AI Review
 ```
 
-Current code imports Hevy workout exports, fetches Suunto activities through `suuntool`, fetches Vitalsync Apple Health sleep and blood pressure records, fetches Withings body, activity, workout, and sleep-summary data, writes local records, builds a `DailyState`, and renders AI-readable daily context. Physical Context can read normalized Vitalsync steps from `vitalsync/steps.csv` when available.
+Current code imports Hevy workout exports, fetches Suunto activities through `suuntool`, fetches Vitalsync Apple Health sleep, step, and blood-pressure records, fetches Withings body, activity, workout, and sleep-summary data, writes local records, builds a `DailyState`, and renders AI-readable daily context.
 
 Sleep summaries are assigned to local wake date. Vitalsync starts with Sleep Cycle-derived `sleep_analysis` records and derives daily sleep summaries inside ingest.
 
@@ -56,7 +56,7 @@ Plugins fetch and normalize source-specific data. Physical Context source preced
 | `hevy` | Hevy Export | strength workouts, strength sets | CSV export or browser export |
 | `suunto` | Suunto App via suuntool | workouts, workout load | `suuntool` CLI |
 | `vitalsync` | Vitalsync HealthKit Bridge | steps, sleep, blood pressure | Vitalsync receiver API |
-| `withings` | Withings Health Cloud | body composition; legacy steps, sleep, workouts | Withings API |
+| `withings` | Withings Health Cloud | body composition, blood pressure; legacy steps, sleep, workouts | Withings API |
 
 A lower-level context setting overrides a higher-level `default`.
 
@@ -81,7 +81,7 @@ sleep = "vitalsync"
 
 Defaults favor Suunto for primary workouts because it has stronger distance, duration, activity type, heart-rate, energy, and TSS telemetry than mirrored Withings rows. Hevy is set-level strength detail, not primary workout telemetry. Training-load metrics use Suunto TSS.
 
-Withings remains the body-composition source. Vitalsync is the default for steps because Withings step totals have been unreliable. Vitalsync is also the default for sleep and blood pressure because those records are closest to Apple Health source data.
+Withings remains the body-composition source and can supply blood pressure when its measure export includes paired systolic/diastolic rows. Vitalsync is the default for steps because Withings step totals have been unreliable. Vitalsync is also the default for sleep and blood pressure because those records are closest to Apple Health source data.
 
 Invalid or unavailable configured context sources emit warnings and skip that metric. Missing rows for a report date are treated as missing data, not config errors. Source CSVs remain unchanged.
 
@@ -151,7 +151,7 @@ Hevy import from CSV export:
 ingest import hevy --csv ~/Downloads/hevy-workouts.csv
 ```
 
-The Hevy public API currently requires Hevy Pro. Without Pro, use the app export: Profile > Settings > Export & Import Data > Export Data > Export Workouts. `ingest sync hevy` automates that export with a dedicated Playwright browser profile stored under the application data directory. On the first run, log in to Hevy in the opened browser window, then rerun the command.
+The Hevy public API currently requires Hevy Pro. Without Pro, use the app export: Profile > Settings > Export & Import Data > Export Data > Export Workouts. `ingest sync hevy` automates that export with a dedicated Playwright browser profile stored under the application data directory. On the first run, log in to Hevy in the opened browser window, then rerun the command. Optional `plugin.hevy.email` and `plugin.hevy.password` fill the login form automatically; they are stored as plaintext config values, so prefer the persistent browser session when it works.
 
 Suunto sync uses the user-managed [`suuntool`](https://github.com/tajchert/suuntool) command. Install it and run `suuntool login` separately, then enable `[plugin.suunto]` in the config file. `plugin.suunto.command` accepts an absolute executable path and otherwise defaults to `suuntool` from PATH.
 
@@ -161,7 +161,7 @@ Vitalsync sync fetches Apple Health records from the configured `plugin.vitalsyn
 ingest auth vitalsync register-client --pairing-token "<PAIRING_TOKEN>" --client-label "ingest"
 ```
 
-This saves `client_id`, `refresh_token`, `access_token`, and `expires_at` to the config file. `ingest sync vitalsync` refreshes the access token automatically when needed. Supported record types are `sleep_analysis` and `blood_pressure`; sleep is filtered to Sleep Cycle (`com.lexwarelabs.goodmorning`) unless `plugin.vitalsync.source_bundle_id` is set to an empty string.
+This saves `client_id`, `refresh_token`, `access_token`, and `expires_at` to the config file. `ingest sync vitalsync` refreshes the access token automatically when needed. Supported record types are `sleep_analysis`, `blood_pressure`, and `step_count`; sleep is filtered to Sleep Cycle (`com.lexwarelabs.goodmorning`) unless `plugin.vitalsync.source_bundle_id` is set to an empty string. Sync writes sleep, blood-pressure, and step CSV headers even when no matching records are returned, so context generation can distinguish "no rows yet" from "plugin has not synced."
 
 Withings OAuth helpers:
 
