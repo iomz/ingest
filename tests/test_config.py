@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ingest.config import load_config, render_toml, update_withings_tokens
+from ingest.config import load_config, render_toml, update_vitalsync_tokens, update_withings_tokens
 
 
 class ConfigTest(unittest.TestCase):
@@ -260,6 +260,35 @@ refresh_token = "old-refresh"
             updated = load_config(config_path)
             self.assertEqual(updated.withings.access_token, "new-access")
             self.assertEqual(updated.withings.refresh_token, "old-refresh")
+
+    def test_updates_vitalsync_client_tokens_from_registration_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text(
+                """
+[vitalsync]
+client_id = "old-client"
+refresh_token = "old-refresh"
+""".strip(),
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+
+            update_vitalsync_tokens(
+                config,
+                {
+                    "client_id": "new-client",
+                    "refresh_token": "new-refresh",
+                    "access_token": "new-access",
+                    "expires_at": "2026-06-29T12:00:00Z",
+                },
+            )
+
+            updated = load_config(config_path)
+            self.assertEqual(updated.vitalsync.client_id, "new-client")
+            self.assertEqual(updated.vitalsync.refresh_token, "new-refresh")
+            self.assertEqual(updated.vitalsync.access_token, "new-access")
+            self.assertEqual(updated.vitalsync.expires_at, "2026-06-29T12:00:00Z")
 
     def test_renders_nested_tables(self) -> None:
         rendered = render_toml({"sync": {"withings": {"days": 30}}})

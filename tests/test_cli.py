@@ -34,9 +34,13 @@ class CliTest(unittest.TestCase):
         sync_all_args = parser.parse_args(["sync", "all"])
         import_args = parser.parse_args(["import", "hevy", "--csv", "hevy.csv"])
         backfill_args = parser.parse_args(["backfill", "withings", "--from", "2026-01-01"])
-        oauth_args = parser.parse_args(
-            ["oauth", "withings", "auth-url", "--redirect-uri", "https://callback.example"]
+        auth_args = parser.parse_args(
+            ["auth", "withings", "auth-url", "--redirect-uri", "https://callback.example"]
         )
+        vitalsync_register_args = parser.parse_args(
+            ["auth", "vitalsync", "register-client", "--pairing-token", "pair"]
+        )
+        vitalsync_refresh_args = parser.parse_args(["auth", "vitalsync", "refresh-token"])
 
         self.assertEqual(today_args.source, "today")
         self.assertFalse(today_args.sync)
@@ -65,9 +69,15 @@ class CliTest(unittest.TestCase):
         self.assertEqual(backfill_args.source, "backfill")
         self.assertEqual(backfill_args.command, "withings")
         self.assertEqual(backfill_args.from_date.isoformat(), "2026-01-01")
-        self.assertEqual(oauth_args.source, "oauth")
-        self.assertEqual(oauth_args.service, "withings")
-        self.assertEqual(oauth_args.command, "auth-url")
+        self.assertEqual(auth_args.source, "auth")
+        self.assertEqual(auth_args.service, "withings")
+        self.assertEqual(auth_args.command, "auth-url")
+        self.assertEqual(vitalsync_register_args.service, "vitalsync")
+        self.assertEqual(vitalsync_register_args.command, "register-client")
+        self.assertEqual(vitalsync_register_args.pairing_token, "pair")
+        self.assertEqual(vitalsync_register_args.client_label, "ingest")
+        self.assertEqual(vitalsync_refresh_args.service, "vitalsync")
+        self.assertEqual(vitalsync_refresh_args.command, "refresh-token")
 
     def test_parser_rejects_removed_alias_commands(self) -> None:
         parser = build_parser()
@@ -78,7 +88,10 @@ class CliTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["withings", "sync"])
 
-    def test_oauth_withings_auth_url_prints_url(self) -> None:
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["oauth", "withings", "auth-url"])
+
+    def test_auth_withings_auth_url_prints_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
@@ -90,7 +103,7 @@ class CliTest(unittest.TestCase):
                     [
                         "--config",
                         str(config_path),
-                        "oauth",
+                        "auth",
                         "withings",
                         "auth-url",
                         "--redirect-uri",
@@ -102,6 +115,63 @@ class CliTest(unittest.TestCase):
             output = stdout.getvalue()
             self.assertIn("https://account.withings.com/oauth2_user/authorize2", output)
             self.assertIn("client_id=client", output)
+
+    def test_auth_vitalsync_register_client_saves_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "ingest.toml"
+            config_path.write_text("[vitalsync]\nbase_url = \"https://receiver.example/vitalsync/v1\"\n", encoding="utf-8")
+
+            stdout = io.StringIO()
+            with (
+                contextlib.redirect_stdout(stdout),
+                mock.patch("ingest.cli.vitalsync.register_client") as register_client,
+            ):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "auth",
+                        "vitalsync",
+                        "register-client",
+                        "--pairing-token",
+                        "pair",
+                        "--client-label",
+                        "ingest on test",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            register_client.assert_called_once()
+            _config_arg, kwargs = register_client.call_args
+            self.assertEqual(kwargs["pairing_token"], "pair")
+            self.assertEqual(kwargs["client_label"], "ingest on test")
+            self.assertEqual(stdout.getvalue(), f"{config_path}\n")
+
+    def test_auth_vitalsync_refresh_token_saves_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "ingest.toml"
+            config_path.write_text("[vitalsync]\nclient_id = \"client\"\nrefresh_token = \"refresh\"\n", encoding="utf-8")
+
+            stdout = io.StringIO()
+            with (
+                contextlib.redirect_stdout(stdout),
+                mock.patch("ingest.cli.vitalsync.refresh_configured_access_token") as refresh_token,
+            ):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "auth",
+                        "vitalsync",
+                        "refresh-token",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            refresh_token.assert_called_once()
+            self.assertEqual(stdout.getvalue(), f"{config_path}\n")
 
     def test_ingest_day_prints_terminal_content_without_sync_when_data_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

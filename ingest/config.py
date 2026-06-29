@@ -145,6 +145,12 @@ def update_withings_tokens(config: AppConfig, token: dict[str, Any]) -> None:
 
 def update_vitalsync_tokens(config: AppConfig, token: dict[str, Any]) -> None:
     vitalsync = config.data.setdefault("vitalsync", {})
+    client_id = str(token.get("client_id", "")).strip()
+    refresh_token = str(token.get("refresh_token", "")).strip()
+    if client_id:
+        vitalsync["client_id"] = client_id
+    if refresh_token:
+        vitalsync["refresh_token"] = refresh_token
     vitalsync["access_token"] = _required_token_value(token, "access_token", "Vitalsync")
     if "expires_at" in token:
         vitalsync["expires_at"] = str(token["expires_at"])

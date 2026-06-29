@@ -29,11 +29,11 @@ ingest today
 
 No compatibility alias is kept. `ingest today` is only daily context command.
 
-Withings OAuth helper commands moved under `oauth`:
+Withings OAuth helper commands moved under `auth`:
 
 ```sh
-ingest oauth withings auth-url
-ingest oauth withings exchange-code
+ingest auth withings auth-url
+ingest auth withings exchange-code
 ```
 
 ## File Changes

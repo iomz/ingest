@@ -36,6 +36,12 @@ SLEEP_CATEGORIES = {
 }
 
 
+class VitalsyncHTTPError(SystemExit):
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def sync(config: AppConfig, *, end_date: date | None = None) -> list[Path]:
     if not config.vitalsync.enabled:
         return []
@@ -52,18 +58,18 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
     requests = _requests()
     with requests.Session() as session:
         access_token = get_access_token(session, config)
-        sleep_records = fetch_records(
+        sleep_records, access_token = fetch_records_with_refresh(
             session,
-            config.vitalsync,
+            config,
             access_token,
             sample_type=SLEEP_ANALYSIS,
             start_date=start_date,
             end_date=end_date,
             local_timezone=config.timezone,
         )
-        blood_pressure_records = fetch_records(
+        blood_pressure_records, access_token = fetch_records_with_refresh(
             session,
-            config.vitalsync,
+            config,
             access_token,
             sample_type=BLOOD_PRESSURE,
             start_date=start_date,
@@ -110,7 +116,9 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
 
 
 def get_access_token(session: Any, config: AppConfig) -> str:
-    if config.vitalsync.access_token and not _token_expired(config.vitalsync.expires_at):
+    if config.vitalsync.access_token and (
+        not config.vitalsync.refresh_token or _token_current(config.vitalsync.expires_at)
+    ):
         return config.vitalsync.access_token
     if not config.vitalsync.refresh_token:
         raise SystemExit(
@@ -119,6 +127,43 @@ def get_access_token(session: Any, config: AppConfig) -> str:
         )
     if not config.vitalsync.client_id:
         raise SystemExit("Missing Vitalsync client_id for refresh token flow.")
+    return refresh_app_access_token(session, config)
+
+
+def register_client(config: AppConfig, *, pairing_token: str, client_label: str = "") -> dict[str, Any]:
+    requests = _requests()
+    with requests.Session() as session:
+        try:
+            response = session.post(
+                f"{config.vitalsync.base_url}/clients/register",
+                json={
+                    "schema": "vitalsync.client_registration.v1",
+                    "pairing_token": pairing_token,
+                    "client_type": "ingest",
+                    "client_label": client_label,
+                },
+                timeout=TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise SystemExit(f"Could not reach Vitalsync client registration endpoint: {exc}") from exc
+    token = _vitalsync_body(response, "Vitalsync client registration failed")
+    update_vitalsync_tokens(config, token)
+    return token
+
+
+def refresh_configured_access_token(config: AppConfig) -> dict[str, Any]:
+    if not config.vitalsync.refresh_token:
+        raise SystemExit("Missing Vitalsync refresh_token.")
+    if not config.vitalsync.client_id:
+        raise SystemExit("Missing Vitalsync client_id for refresh token flow.")
+    requests = _requests()
+    with requests.Session() as session:
+        token = refresh_access_token(session, config.vitalsync)
+    update_vitalsync_tokens(config, token)
+    return token
+
+
+def refresh_app_access_token(session: Any, config: AppConfig) -> str:
     token = refresh_access_token(session, config.vitalsync)
     update_vitalsync_tokens(config, token)
     return str(token["access_token"])
@@ -134,6 +179,45 @@ def refresh_access_token(session: Any, config: VitalsyncConfig) -> dict[str, Any
     except _requests().RequestException as exc:
         raise SystemExit(f"Could not reach Vitalsync token endpoint: {exc}") from exc
     return _vitalsync_body(response, "Vitalsync token refresh failed")
+
+
+def fetch_records_with_refresh(
+    session: Any,
+    config: AppConfig,
+    access_token: str,
+    *,
+    sample_type: str,
+    start_date: date,
+    end_date: date,
+    local_timezone: ZoneInfo,
+) -> tuple[list[dict[str, Any]], str]:
+    try:
+        records = fetch_records(
+            session,
+            config.vitalsync,
+            access_token,
+            sample_type=sample_type,
+            start_date=start_date,
+            end_date=end_date,
+            local_timezone=local_timezone,
+        )
+        return records, access_token
+    except VitalsyncHTTPError as exc:
+        if exc.status_code != 401 or not config.vitalsync.refresh_token:
+            raise
+    if not config.vitalsync.client_id:
+        raise SystemExit("Missing Vitalsync client_id for refresh token flow.")
+    refreshed_access_token = refresh_app_access_token(session, config)
+    records = fetch_records(
+        session,
+        config.vitalsync,
+        refreshed_access_token,
+        sample_type=sample_type,
+        start_date=start_date,
+        end_date=end_date,
+        local_timezone=local_timezone,
+    )
+    return records, refreshed_access_token
 
 
 def fetch_records(
@@ -404,15 +488,28 @@ def _optional_pressure(value: Any) -> str:
     return str(round(number))
 
 
-def _token_expired(value: str) -> bool:
+def _parse_expires_at(value: str) -> datetime | None:
     if not value:
-        return False
+        return None
     try:
         if value.isdecimal():
-            expires_at = datetime.fromtimestamp(int(value), tz=timezone.utc)
-        else:
-            expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return datetime.fromtimestamp(int(value), tz=timezone.utc)
+        expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            return expires_at.replace(tzinfo=timezone.utc)
+        return expires_at
     except ValueError:
+        return None
+
+
+def _token_current(value: str) -> bool:
+    expires_at = _parse_expires_at(value)
+    return expires_at is not None and expires_at > datetime.now(timezone.utc) + timedelta(seconds=30)
+
+
+def _token_expired(value: str) -> bool:
+    expires_at = _parse_expires_at(value)
+    if expires_at is None:
         return False
     return expires_at <= datetime.now(timezone.utc) + timedelta(seconds=30)
 
@@ -424,7 +521,7 @@ def _vitalsync_body(response: Any, prefix: str) -> dict[str, Any]:
         raise SystemExit(f"{prefix}: response was not JSON.") from exc
     if response.status_code >= 400:
         message = data.get("message") if isinstance(data, dict) else data
-        raise SystemExit(f"{prefix} with HTTP {response.status_code}: {message}")
+        raise VitalsyncHTTPError(f"{prefix} with HTTP {response.status_code}: {message}", response.status_code)
     if not isinstance(data, dict):
         raise SystemExit(f"{prefix}: response was not an object.")
     return data
