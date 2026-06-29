@@ -141,8 +141,8 @@ ingest sync hevy
 ingest sync suunto
 ingest sync vitalsync
 ingest sync withings
+ingest sync withings --backfill-since 2024-01-01
 ingest sync all
-ingest backfill withings --from 2024-01-01
 ```
 
 Hevy import from CSV export:

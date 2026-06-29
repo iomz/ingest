@@ -265,7 +265,7 @@ def _load_withings_config(data: dict[str, Any], data_dir: Path) -> WithingsConfi
     auth_state = read_auth_state(auth_state_path)
     return WithingsConfig(
         configured=_plugin_configured(data, "withings"),
-        enabled=bool(withings.get("enabled", True)),
+        enabled=_bool_value(withings.get("enabled", True), "plugin.withings.enabled"),
         auth_state_path=auth_state_path,
         client_id=str(auth_state.get("client_id", "")).strip(),
         client_secret=str(auth_state.get("client_secret", "")).strip(),
@@ -305,7 +305,7 @@ def _load_hevy_config(data: dict[str, Any], data_dir: Path) -> HevyConfig:
     hevy = _plugin_section(data, "hevy")
     return HevyConfig(
         configured=_plugin_configured(data, "hevy"),
-        enabled=bool(hevy.get("enabled", True)),
+        enabled=_bool_value(hevy.get("enabled", True), "plugin.hevy.enabled"),
         workouts_csv=_configured_data_path(
             data_dir,
             hevy,
@@ -330,7 +330,7 @@ def _load_suunto_config(data: dict[str, Any], data_dir: Path) -> SuuntoConfig:
     suunto = _plugin_section(data, "suunto")
     return SuuntoConfig(
         configured=_plugin_configured(data, "suunto"),
-        enabled=bool(suunto.get("enabled", True)),
+        enabled=_bool_value(suunto.get("enabled", True), "plugin.suunto.enabled"),
         command=str(Path(str(suunto.get("command", "")).strip() or "suuntool").expanduser()),
         workouts_csv=_configured_data_path(
             data_dir,
@@ -353,13 +353,11 @@ def _load_vitalsync_config(data: dict[str, Any], data_dir: Path) -> VitalsyncCon
     )
     auth_state = read_auth_state(auth_state_path)
     endpoint = str(
-        vitalsync.get("endpoint")
-        or vitalsync.get("provider")
-        or "https://api.sazanka.io/vitalsync/v1"
+        vitalsync.get("endpoint") or vitalsync.get("provider") or "https://api.sazanka.io/vitalsync/v1"
     ).rstrip("/")
     return VitalsyncConfig(
         configured=_plugin_configured(data, "vitalsync"),
-        enabled=bool(vitalsync.get("enabled", True)),
+        enabled=_bool_value(vitalsync.get("enabled", True), "plugin.vitalsync.enabled"),
         auth_state_path=auth_state_path,
         endpoint=endpoint,
         client_id=str(auth_state.get("client_id", "")).strip(),
@@ -392,10 +390,10 @@ def _load_vitalsync_config(data: dict[str, Any], data_dir: Path) -> VitalsyncCon
 
 def _plugin_section(data: dict[str, Any], name: str) -> dict[str, Any]:
     plugins = data.get("plugin", {})
-    if plugins and not isinstance(plugins, dict):
+    if not isinstance(plugins, dict):
         raise SystemExit("plugin must be a table.")
     section = plugins.get(name, {})
-    if section and not isinstance(section, dict):
+    if not isinstance(section, dict):
         raise SystemExit(f"plugin.{name} must be a table.")
     return section
 
@@ -407,7 +405,7 @@ def _plugin_configured(data: dict[str, Any], name: str) -> bool:
 
 def _load_context_config(data: dict[str, Any]) -> ContextConfig:
     context = data.get("context", {})
-    if context and not isinstance(context, dict):
+    if not isinstance(context, dict):
         raise SystemExit("context must be a table.")
     return ContextConfig(
         activity=_context_section(context, "activity"),
@@ -457,6 +455,12 @@ def _positive_int(value: Any, name: str) -> int:
     if number < 1:
         raise SystemExit(f"{name} must be greater than 0.")
     return number
+
+
+def _bool_value(value: Any, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise SystemExit(f"{name} must be a boolean.")
 
 
 def _int_value(value: Any, name: str) -> int:
