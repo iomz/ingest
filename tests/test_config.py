@@ -174,6 +174,14 @@ sync_days = 14
             self.assertEqual(config.suunto.command, str(Path("~/bin/suuntool").expanduser()))
             self.assertEqual(config.suunto.days, 14)
 
+    def test_rejects_non_boolean_plugin_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ingest.toml"
+            config_path.write_text('[plugin.withings]\nenabled = "false"\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(SystemExit, "plugin.withings.enabled"):
+                load_config(config_path)
+
     def test_loads_enabled_vitalsync_config_and_sync_window(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

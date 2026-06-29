@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import anyio
+import typer
 
 from ingest.activities import canonical_activity_type
 from ingest.app_data import write_csv_file, write_json_file
 from ingest.config import AppConfig, SuuntoConfig
+from ingest.plugins.contract import PluginCliRegistry, PluginManifest
 
 WORKOUT_FIELDS = [
     "source",
@@ -65,6 +68,36 @@ ACTIVITY_NAMES = {
 
 def sync(config: AppConfig) -> list[Path]:
     return anyio.run(sync_async, config)
+
+
+def register_cli(registry: PluginCliRegistry) -> None:
+    @registry.sync_app.command("suunto")
+    def sync_suunto(ctx: typer.Context) -> None:
+        registry.print_paths(registry.run_sync(registry.get_config(ctx), "suunto"))
+
+
+def sync_unavailable_reason(config: AppConfig) -> str:
+    if not config.suunto.configured:
+        return "missing [plugin.suunto] config table"
+    return "" if shutil.which(config.suunto.command) else f"command not found: {config.suunto.command}"
+
+
+manifest = PluginManifest(
+    name="suunto",
+    provides=(
+        "activity.walk.duration_min",
+        "activity.walk.distance_km",
+        "activity.run.duration_min",
+        "activity.run.distance_km",
+        "activity.run.step_count",
+        "activity.swim.distance_km",
+        "activity.crosstrainer.avg_hr",
+        "activity.strength.tss_score",
+    ),
+    sync=sync,
+    sync_unavailable_reason=sync_unavailable_reason,
+    register_cli=register_cli,
+)
 
 
 async def sync_async(config: AppConfig, *, end_date: date | None = None) -> list[Path]:

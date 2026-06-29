@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import secrets
 import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -10,9 +11,13 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import webbrowser
 from zoneinfo import ZoneInfo
 
+import typer
+
+from ingest import prompts
 from ingest.activities import DEFAULT_TIMEZONE
 from ingest.app_data import write_csv_file, write_json_file
 from ingest.config import AppConfig, update_withings_auth_state, update_withings_tokens
+from ingest.plugins.contract import PluginCliRegistry, PluginManifest
 
 TOKEN_URL = "https://wbsapi.withings.net/v2/oauth2"
 AUTHORIZE_URL = "https://account.withings.com/oauth2_user/authorize2"
@@ -105,6 +110,197 @@ def sync(config: AppConfig, *, end_date: date | None = None) -> list[Path]:
     if start_date > target_end_date:
         return []
     return sync_range(config, start_date, target_end_date, raw_name="body_measures_sync.json")
+
+
+def register_cli(registry: PluginCliRegistry) -> None:
+    withings_auth_app = typer.Typer(help="Withings OAuth helpers.", invoke_without_command=True)
+
+    @registry.sync_app.command("withings")
+    def sync_withings(
+        ctx: typer.Context,
+        backfill_since: str | None = typer.Option(
+            None,
+            "--backfill-since",
+            help="Historical start date in YYYY-MM-DD format.",
+        ),
+        end_date: str | None = typer.Option(
+            None,
+            "--end-date",
+            help="Historical end date in YYYY-MM-DD format. Defaults to today.",
+        ),
+    ) -> None:
+        config = registry.get_config(ctx)
+        if backfill_since is None:
+            registry.print_paths(registry.run_sync(config, "withings"))
+            return
+        if not registry.sync_ready(config, "withings", True):
+            return
+        registry.print_paths(
+            backfill(
+                config,
+                start_date=registry.date_arg(backfill_since),
+                end_date=registry.optional_date_arg(end_date),
+            )
+        )
+
+    @withings_auth_app.callback(invoke_without_command=True)
+    def auth_withings(
+        ctx: typer.Context,
+        client_id: str | None = typer.Option(None, "--client-id", help="Withings OAuth client id."),
+        client_secret: str | None = typer.Option(None, "--client-secret", help="Withings OAuth client secret."),
+        redirect_uri: str | None = typer.Option(
+            None,
+            "--redirect-uri",
+            help="Registered Withings redirect URI. Defaults to local callback.",
+        ),
+        no_local_callback: bool = typer.Option(
+            False,
+            "--no-local-callback",
+            help="Do not start the local OAuth callback server; prompt for pasted code instead.",
+        ),
+        callback_timeout_seconds: int = typer.Option(
+            LOCAL_CALLBACK_TIMEOUT_SECONDS,
+            "--callback-timeout-seconds",
+            help="Seconds to wait for the local OAuth callback.",
+        ),
+    ) -> None:
+        if ctx.invoked_subcommand is not None:
+            return
+        args = WithingsAuthArgs(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+            no_local_callback=no_local_callback,
+            callback_timeout_seconds=callback_timeout_seconds,
+        )
+        config = registry.get_config(ctx)
+        _auth_withings(config, args)
+        print(config.withings.auth_state_path)
+
+    @withings_auth_app.command("auth-url")
+    def auth_withings_url(
+        ctx: typer.Context,
+        redirect_uri: str = typer.Option(..., "--redirect-uri", help="Registered Withings redirect URI."),
+        state: str = typer.Option("ingest", "--state", help="OAuth state value."),
+        client_id: str | None = typer.Option(None, "--client-id", help="Withings OAuth client id."),
+    ) -> None:
+        config = registry.get_config(ctx)
+        resolved_client_id = client_id or config.withings.client_id or prompts.text("Withings client id")
+        print(authorization_url(config, redirect_uri=redirect_uri, state=state, client_id=resolved_client_id))
+
+    @withings_auth_app.command("exchange-code")
+    def auth_withings_exchange_code(
+        ctx: typer.Context,
+        redirect_uri: str = typer.Option(..., "--redirect-uri", help="Registered Withings redirect URI."),
+        code: str = typer.Option(..., "--code", help="Authorization code from the redirect URL."),
+        client_id: str | None = typer.Option(None, "--client-id", help="Withings OAuth client id."),
+        client_secret: str | None = typer.Option(None, "--client-secret", help="Withings OAuth client secret."),
+    ) -> None:
+        config = registry.get_config(ctx)
+        resolved_client_id = client_id or config.withings.client_id or prompts.text("Withings client id")
+        resolved_client_secret = (
+            client_secret or config.withings.client_secret or prompts.password("Withings client secret")
+        )
+        exchange_authorization_code(
+            config,
+            code=code,
+            redirect_uri=redirect_uri,
+            client_id=resolved_client_id,
+            client_secret=resolved_client_secret,
+        )
+        print(config.withings.auth_state_path)
+
+    registry.auth_app.add_typer(withings_auth_app, name="withings")
+
+
+class WithingsAuthArgs:
+    def __init__(
+        self,
+        *,
+        client_id: str | None,
+        client_secret: str | None,
+        redirect_uri: str | None,
+        no_local_callback: bool,
+        callback_timeout_seconds: int,
+    ) -> None:
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.redirect_uri = redirect_uri
+        self.no_local_callback = no_local_callback
+        self.callback_timeout_seconds = callback_timeout_seconds
+
+
+def _auth_withings(config: AppConfig, args: WithingsAuthArgs) -> None:
+    client_id = args.client_id or config.withings.client_id or prompts.text("Withings client id")
+    client_secret = args.client_secret or config.withings.client_secret or prompts.password("Withings client secret")
+    default_redirect_uri = "http://127.0.0.1:8000/callback"
+    redirect_uri = args.redirect_uri or prompts.text("Withings redirect URI", default=default_redirect_uri)
+    oauth_state = secrets.token_urlsafe(16)
+    auth_url = authorization_url(config, redirect_uri=redirect_uri, state=oauth_state, client_id=client_id)
+    code = ""
+    if not args.no_local_callback and _local_http_redirect(redirect_uri):
+        use_local_callback = prompts.confirm(
+            f"Open browser and wait for local callback at {redirect_uri}?",
+            default=True,
+        )
+        if use_local_callback:
+            print(auth_url)
+            code = capture_local_oauth_code(
+                auth_url,
+                redirect_uri,
+                expected_state=oauth_state,
+                timeout_seconds=args.callback_timeout_seconds,
+            )
+    if not code:
+        print(auth_url)
+        pasted = prompts.text("Paste Withings redirect URL or authorization code")
+        code = parse_authorization_code(pasted, expected_state=oauth_state)
+    exchange_authorization_code(
+        config,
+        code=code,
+        redirect_uri=redirect_uri,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+
+
+def _local_http_redirect(redirect_uri: str) -> bool:
+    parsed = urlparse(redirect_uri)
+    return parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"} and parsed.port is not None
+
+
+def sync_unavailable_reason(config: AppConfig) -> str:
+    if config.withings.access_token:
+        return ""
+    if config.withings.refresh_token and config.withings.client_id and config.withings.client_secret:
+        return ""
+    return f"run `ingest auth withings exchange-code`; missing auth state at {config.withings.auth_state_path}"
+
+
+manifest = PluginManifest(
+    name="withings",
+    provides=(
+        "activity.walk.duration_min",
+        "activity.walk.distance_km",
+        "activity.walk.step_count",
+        "activity.run.duration_min",
+        "activity.run.distance_km",
+        "activity.run.step_count",
+        "measurement.body.weight",
+        "measurement.body.height",
+        "measurement.body.fat_free_mass",
+        "measurement.body.diastolic_blood_pressure",
+        "measurement.body.systolic_blood_pressure",
+        "measurement.steps",
+        "recovery.sleep.total_sleep_min",
+        "recovery.sleep.time_in_bed_min",
+        "recovery.sleep.sleep_score",
+    ),
+    sync=sync,
+    sync_unavailable_reason=sync_unavailable_reason,
+    register_cli=register_cli,
+    serial_sync=True,
+)
 
 
 def _sync_cursor_date(config: AppConfig, end_date: date) -> date:
@@ -252,7 +448,13 @@ def exchange_authorization_code(
     update_withings_tokens(config, body)
 
 
-def capture_local_oauth_code(auth_url: str, redirect_uri: str, *, timeout_seconds: int) -> str:
+def capture_local_oauth_code(
+    auth_url: str,
+    redirect_uri: str,
+    *,
+    expected_state: str,
+    timeout_seconds: int,
+) -> str:
     parsed_redirect = urlparse(redirect_uri)
     if parsed_redirect.scheme != "http" or parsed_redirect.hostname not in {"127.0.0.1", "localhost"}:
         raise SystemExit("Local Withings callback requires an http://127.0.0.1 or http://localhost redirect URI.")
@@ -266,6 +468,11 @@ def capture_local_oauth_code(auth_url: str, redirect_uri: str, *, timeout_second
             query = parse_qs(urlparse(self.path).query)
             code = (query.get("code") or [""])[0]
             error = (query.get("error") or [""])[0]
+            returned_state = (query.get("state") or [""])[0]
+            if returned_state != expected_state:
+                result["error"] = "state mismatch"
+                self._send_response("Withings authorization failed. Return to the terminal.")
+                return
             if code:
                 result["code"] = code
                 self._send_response("Withings authorization complete. You can close this tab.")
@@ -299,13 +506,17 @@ def capture_local_oauth_code(auth_url: str, redirect_uri: str, *, timeout_second
     raise SystemExit("Timed out waiting for Withings OAuth callback.")
 
 
-def parse_authorization_code(value: str) -> str:
+def parse_authorization_code(value: str, *, expected_state: str = "") -> str:
     stripped = value.strip()
     if not stripped:
         raise SystemExit("Missing Withings authorization code.")
     parsed = urlparse(stripped)
     if parsed.query:
-        code = (parse_qs(parsed.query).get("code") or [""])[0]
+        query = parse_qs(parsed.query)
+        returned_state = (query.get("state") or [""])[0]
+        if expected_state and returned_state != expected_state:
+            raise SystemExit("Withings authorization failed: state mismatch")
+        code = (query.get("code") or [""])[0]
         if code:
             return code
     return stripped

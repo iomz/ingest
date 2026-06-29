@@ -6,7 +6,7 @@ timezone = "Asia/Tokyo"
 
 [ui]
 # Terminal palette: "default" or "colorful".
-theme = "corlorful"
+theme = "colorful"
 # Controls body-weight direction color only: "loss", "maintenance", or "gain".
 body_weight_goal = "maintenance"
 

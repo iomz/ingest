@@ -6,14 +6,20 @@ decide how plugin records contribute to AI-readable context.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Protocol
+from ingest.plugins.contract import (
+    PluginCliRegistry,
+    PluginLoadError,
+    PluginManifest,
+    REPOSITORY_PLUGINS,
+    load_plugin,
+    load_repository_plugins,
+)
 
-from ingest.config import AppConfig
-
-
-class Plugin(Protocol):
-    name: str
-
-    def sync(self, config: AppConfig) -> list[Path]:
-        """Fetch recent source data and write normalized records."""
+__all__ = [
+    "PluginCliRegistry",
+    "PluginLoadError",
+    "PluginManifest",
+    "REPOSITORY_PLUGINS",
+    "load_plugin",
+    "load_repository_plugins",
+]
