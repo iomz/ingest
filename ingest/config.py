@@ -11,6 +11,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ingest.app_data import default_config_path, resolve_data_dir
+from ingest.auth_state import read_auth_state, write_auth_state
 
 DEFAULT_CONFIG_PATH = default_config_path()
 DEFAULT_CONFIG_EXAMPLE_PATH = Path("config.example.toml")
@@ -20,6 +21,7 @@ DEFAULT_CONFIG_EXAMPLE_PATH = Path("config.example.toml")
 class WithingsConfig:
     configured: bool
     enabled: bool
+    auth_state_path: Path
     client_id: str
     client_secret: str
     refresh_token: str
@@ -41,8 +43,6 @@ class HevyConfig:
     sets_csv: Path
     raw_dir: Path
     browser_dir: Path
-    email: str
-    password: str
     login_timeout_seconds: int
     login_poll_interval_seconds: int
 
@@ -61,7 +61,8 @@ class SuuntoConfig:
 class VitalsyncConfig:
     configured: bool
     enabled: bool
-    base_url: str
+    auth_state_path: Path
+    endpoint: str
     client_id: str
     refresh_token: str
     access_token: str
@@ -151,7 +152,7 @@ def save_config(config: AppConfig) -> None:
 
 
 def update_withings_tokens(config: AppConfig, token: dict[str, Any]) -> None:
-    withings = config.data.setdefault("plugin", {}).setdefault("withings", {})
+    withings = read_auth_state(config.withings.auth_state_path)
     withings["access_token"] = _required_token_value(token, "access_token", "Withings")
     refresh_token = str(token.get("refresh_token", "")).strip()
     if refresh_token:
@@ -160,11 +161,11 @@ def update_withings_tokens(config: AppConfig, token: dict[str, Any]) -> None:
         withings["expires_at"] = int(token["expires_in"]) + int(time.time())
     if "expires_at" in token:
         withings["expires_at"] = token["expires_at"]
-    save_config(config)
+    write_auth_state(config.withings.auth_state_path, withings)
 
 
 def update_vitalsync_tokens(config: AppConfig, token: dict[str, Any]) -> None:
-    vitalsync = config.data.setdefault("plugin", {}).setdefault("vitalsync", {})
+    vitalsync = read_auth_state(config.vitalsync.auth_state_path)
     client_id = str(token.get("client_id", "")).strip()
     refresh_token = str(token.get("refresh_token", "")).strip()
     if client_id:
@@ -174,7 +175,21 @@ def update_vitalsync_tokens(config: AppConfig, token: dict[str, Any]) -> None:
     vitalsync["access_token"] = _required_token_value(token, "access_token", "Vitalsync")
     if "expires_at" in token:
         vitalsync["expires_at"] = str(token["expires_at"])
-    save_config(config)
+    write_auth_state(config.vitalsync.auth_state_path, vitalsync)
+
+
+def update_withings_auth_state(
+    config: AppConfig,
+    *,
+    client_id: str = "",
+    client_secret: str = "",
+) -> None:
+    state = read_auth_state(config.withings.auth_state_path)
+    if client_id:
+        state["client_id"] = client_id
+    if client_secret:
+        state["client_secret"] = client_secret
+    write_auth_state(config.withings.auth_state_path, state)
 
 
 def write_toml(data: dict[str, Any], path: Path) -> None:
@@ -241,14 +256,22 @@ def _load_timezone(data: dict[str, Any]) -> ZoneInfo:
 
 def _load_withings_config(data: dict[str, Any], data_dir: Path) -> WithingsConfig:
     withings = _plugin_section(data, "withings")
+    auth_state_path = _configured_data_path(
+        data_dir,
+        withings,
+        "plugin.withings.auth_state",
+        Path("withings/auth.json"),
+    )
+    auth_state = read_auth_state(auth_state_path)
     return WithingsConfig(
         configured=_plugin_configured(data, "withings"),
         enabled=bool(withings.get("enabled", True)),
-        client_id=str(withings.get("client_id", "")).strip(),
-        client_secret=str(withings.get("client_secret") or withings.get("secret") or "").strip(),
-        refresh_token=str(withings.get("refresh_token", "")).strip(),
-        access_token=str(withings.get("access_token", "")).strip(),
-        expires_at=_int_value(withings.get("expires_at", 0), "plugin.withings.expires_at"),
+        auth_state_path=auth_state_path,
+        client_id=str(auth_state.get("client_id", "")).strip(),
+        client_secret=str(auth_state.get("client_secret", "")).strip(),
+        refresh_token=str(auth_state.get("refresh_token", "")).strip(),
+        access_token=str(auth_state.get("access_token", "")).strip(),
+        expires_at=_int_value(auth_state.get("expires_at", 0), "withings auth_state expires_at"),
         measures_csv=_configured_data_path(
             data_dir,
             withings,
@@ -292,8 +315,6 @@ def _load_hevy_config(data: dict[str, Any], data_dir: Path) -> HevyConfig:
         sets_csv=_configured_data_path(data_dir, hevy, "plugin.hevy.sets_csv", Path("hevy/sets.csv")),
         raw_dir=_configured_data_path(data_dir, hevy, "plugin.hevy.raw_dir", Path("hevy/raw")),
         browser_dir=_configured_data_path(data_dir, hevy, "plugin.hevy.browser_dir", Path("hevy/browser")),
-        email=str(hevy.get("email", "")).strip(),
-        password=str(hevy.get("password", "")),
         login_timeout_seconds=_positive_int(
             hevy.get("login_timeout_seconds", 300),
             "plugin.hevy.login_timeout_seconds",
@@ -324,14 +345,27 @@ def _load_suunto_config(data: dict[str, Any], data_dir: Path) -> SuuntoConfig:
 
 def _load_vitalsync_config(data: dict[str, Any], data_dir: Path) -> VitalsyncConfig:
     vitalsync = _plugin_section(data, "vitalsync")
+    auth_state_path = _configured_data_path(
+        data_dir,
+        vitalsync,
+        "plugin.vitalsync.auth_state",
+        Path("vitalsync/auth.json"),
+    )
+    auth_state = read_auth_state(auth_state_path)
+    endpoint = str(
+        vitalsync.get("endpoint")
+        or vitalsync.get("provider")
+        or "https://api.sazanka.io/vitalsync/v1"
+    ).rstrip("/")
     return VitalsyncConfig(
         configured=_plugin_configured(data, "vitalsync"),
         enabled=bool(vitalsync.get("enabled", True)),
-        base_url=str(vitalsync.get("base_url") or "https://api.sazanka.io/vitalsync/v1").rstrip("/"),
-        client_id=str(vitalsync.get("client_id", "")).strip(),
-        refresh_token=str(vitalsync.get("refresh_token", "")).strip(),
-        access_token=str(vitalsync.get("access_token", "")).strip(),
-        expires_at=str(vitalsync.get("expires_at", "")).strip(),
+        auth_state_path=auth_state_path,
+        endpoint=endpoint,
+        client_id=str(auth_state.get("client_id", "")).strip(),
+        refresh_token=str(auth_state.get("refresh_token", "")).strip(),
+        access_token=str(auth_state.get("access_token", "")).strip(),
+        expires_at=str(auth_state.get("expires_at", "")).strip(),
         source_bundle_id=str(vitalsync.get("source_bundle_id", "com.lexwarelabs.goodmorning")).strip(),
         sleep_csv=_configured_data_path(
             data_dir,

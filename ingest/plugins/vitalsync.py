@@ -156,11 +156,10 @@ def get_access_token(session: Any, config: AppConfig) -> str:
         return config.vitalsync.access_token
     if not config.vitalsync.refresh_token:
         raise SystemExit(
-            "Missing Vitalsync access token. Set plugin.vitalsync.access_token in the config file, "
-            "or set plugin.vitalsync.refresh_token and plugin.vitalsync.client_id."
+            "Missing Vitalsync auth state. Run `ingest auth vitalsync register-client`."
         )
     if not config.vitalsync.client_id:
-        raise SystemExit("Missing plugin.vitalsync.client_id for refresh token flow.")
+        raise SystemExit("Missing Vitalsync client id in auth state. Run `ingest auth vitalsync register-client`.")
     return refresh_app_access_token(session, config)
 
 
@@ -169,7 +168,7 @@ def register_client(config: AppConfig, *, pairing_token: str, client_label: str 
     with requests.Session() as session:
         try:
             response = session.post(
-                f"{config.vitalsync.base_url}/clients/register",
+                f"{config.vitalsync.endpoint}/clients/register",
                 json={
                     "schema": "vitalsync.client_registration.v1",
                     "pairing_token": pairing_token,
@@ -187,9 +186,9 @@ def register_client(config: AppConfig, *, pairing_token: str, client_label: str 
 
 def refresh_configured_access_token(config: AppConfig) -> dict[str, Any]:
     if not config.vitalsync.refresh_token:
-        raise SystemExit("Missing plugin.vitalsync.refresh_token.")
+        raise SystemExit("Missing Vitalsync refresh token in auth state. Run `ingest auth vitalsync register-client`.")
     if not config.vitalsync.client_id:
-        raise SystemExit("Missing plugin.vitalsync.client_id for refresh token flow.")
+        raise SystemExit("Missing Vitalsync client id in auth state. Run `ingest auth vitalsync register-client`.")
     requests = _requests()
     with requests.Session() as session:
         token = refresh_access_token(session, config.vitalsync)
@@ -206,7 +205,7 @@ def refresh_app_access_token(session: Any, config: AppConfig) -> str:
 def refresh_access_token(session: Any, config: VitalsyncConfig) -> dict[str, Any]:
     try:
         response = session.post(
-            f"{config.base_url}/tokens/refresh",
+            f"{config.endpoint}/tokens/refresh",
             json={"refresh_token": config.refresh_token, "client_id": config.client_id},
             timeout=TIMEOUT_SECONDS,
         )
@@ -240,7 +239,7 @@ def fetch_records_with_refresh(
         if exc.status_code != 401 or not config.vitalsync.refresh_token:
             raise
     if not config.vitalsync.client_id:
-        raise SystemExit("Missing plugin.vitalsync.client_id for refresh token flow.")
+        raise SystemExit("Missing Vitalsync client id in auth state. Run `ingest auth vitalsync register-client`.")
     refreshed_access_token = refresh_app_access_token(session, config)
     records = fetch_records(
         session,
@@ -277,7 +276,7 @@ def fetch_records(
         }
         if cursor:
             params["cursor"] = cursor
-        url = f"{config.base_url}/records?{urlencode(params)}"
+        url = f"{config.endpoint}/records?{urlencode(params)}"
         try:
             response = session.get(
                 url,

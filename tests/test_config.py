@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 from ingest.config import load_config, render_toml, update_vitalsync_tokens, update_withings_tokens
+
+
+def write_auth_state(data_dir: Path, plugin: str, state: dict[str, object]) -> None:
+    path = data_dir / plugin / "auth.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state), encoding="utf-8")
 
 
 class ConfigTest(unittest.TestCase):
@@ -19,11 +26,14 @@ class ConfigTest(unittest.TestCase):
 data_dir = "{root}/app-data"
 
 [plugin.withings]
-client_id = "withings-client"
-secret = "withings-secret"
 sync_days = 21
 """.strip(),
                 encoding="utf-8",
+            )
+            write_auth_state(
+                root / "app-data",
+                "withings",
+                {"client_id": "withings-client", "client_secret": "withings-secret"},
             )
 
             config = load_config(config_path)
@@ -45,8 +55,6 @@ sync_days = 21
             self.assertEqual(config.hevy.sets_csv, root / "app-data/hevy/sets.csv")
             self.assertEqual(config.hevy.raw_dir, root / "app-data/hevy/raw")
             self.assertEqual(config.hevy.browser_dir, root / "app-data/hevy/browser")
-            self.assertEqual(config.hevy.email, "")
-            self.assertEqual(config.hevy.password, "")
             self.assertEqual(config.hevy.login_timeout_seconds, 300)
             self.assertEqual(config.hevy.login_poll_interval_seconds, 2)
             self.assertTrue(config.suunto.enabled)
@@ -55,7 +63,7 @@ sync_days = 21
             self.assertEqual(config.suunto.raw_dir, root / "app-data/suunto/raw")
             self.assertEqual(config.suunto.days, 30)
             self.assertTrue(config.vitalsync.enabled)
-            self.assertEqual(config.vitalsync.base_url, "https://api.sazanka.io/vitalsync/v1")
+            self.assertEqual(config.vitalsync.endpoint, "https://api.sazanka.io/vitalsync/v1")
             self.assertEqual(config.vitalsync.sleep_csv, root / "app-data/vitalsync/sleep.csv")
             self.assertEqual(config.vitalsync.steps_csv, root / "app-data/vitalsync/steps.csv")
             self.assertEqual(
@@ -85,14 +93,12 @@ body_weight_goal = "loss"
             self.assertEqual(config.ui.theme, "colorful")
             self.assertEqual(config.ui.body_weight_goal, "loss")
 
-    def test_loads_hevy_login_settings(self) -> None:
+    def test_loads_hevy_browser_login_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "ingest.toml"
             config_path.write_text(
                 """
 [plugin.hevy]
-email = "iori@example.com"
-password = "secret"
 login_timeout_seconds = 600
 login_poll_interval_seconds = 20
 """.strip(),
@@ -101,8 +107,6 @@ login_poll_interval_seconds = 20
 
             config = load_config(config_path)
 
-            self.assertEqual(config.hevy.email, "iori@example.com")
-            self.assertEqual(config.hevy.password, "secret")
             self.assertEqual(config.hevy.login_timeout_seconds, 600)
             self.assertEqual(config.hevy.login_poll_interval_seconds, 20)
 
@@ -174,23 +178,26 @@ sync_days = 14
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "ingest.toml"
+            data_dir = root / "app-data"
             config_path.write_text(
-                """
+                f"""
+[app]
+data_dir = "{data_dir}"
+
 [plugin.vitalsync]
 enabled = true
-base_url = "https://api.example/vitalsync/v1/"
-client_id = "client_123"
-refresh_token = "refresh"
+endpoint = "https://api.example/vitalsync/v1/"
 source_bundle_id = ""
 sync_days = 10
 """.strip(),
                 encoding="utf-8",
             )
+            write_auth_state(data_dir, "vitalsync", {"client_id": "client_123", "refresh_token": "refresh"})
 
             config = load_config(config_path)
 
             self.assertTrue(config.vitalsync.enabled)
-            self.assertEqual(config.vitalsync.base_url, "https://api.example/vitalsync/v1")
+            self.assertEqual(config.vitalsync.endpoint, "https://api.example/vitalsync/v1")
             self.assertEqual(config.vitalsync.client_id, "client_123")
             self.assertEqual(config.vitalsync.refresh_token, "refresh")
             self.assertEqual(config.vitalsync.source_bundle_id, "")
@@ -291,14 +298,19 @@ sync_days = 7
 
     def test_updates_withings_tokens_and_rotates_refresh_token_when_returned(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "ingest.toml"
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
             config_path.write_text(
-                """
+                f"""
+[app]
+data_dir = "{data_dir}"
+
 [plugin.withings]
-refresh_token = "old-refresh"
 """.strip(),
                 encoding="utf-8",
             )
+            write_auth_state(data_dir, "withings", {"refresh_token": "old-refresh"})
             config = load_config(config_path)
 
             update_withings_tokens(
@@ -313,14 +325,19 @@ refresh_token = "old-refresh"
 
     def test_preserves_withings_refresh_token_when_refresh_response_omits_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "ingest.toml"
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
             config_path.write_text(
-                """
+                f"""
+[app]
+data_dir = "{data_dir}"
+
 [plugin.withings]
-refresh_token = "old-refresh"
 """.strip(),
                 encoding="utf-8",
             )
+            write_auth_state(data_dir, "withings", {"refresh_token": "old-refresh"})
             config = load_config(config_path)
 
             update_withings_tokens(config, {"access_token": "new-access", "expires_at": 123})
@@ -331,15 +348,19 @@ refresh_token = "old-refresh"
 
     def test_updates_vitalsync_client_tokens_from_registration_response(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "ingest.toml"
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
             config_path.write_text(
-                """
+                f"""
+[app]
+data_dir = "{data_dir}"
+
 [plugin.vitalsync]
-client_id = "old-client"
-refresh_token = "old-refresh"
 """.strip(),
                 encoding="utf-8",
             )
+            write_auth_state(data_dir, "vitalsync", {"client_id": "old-client", "refresh_token": "old-refresh"})
             config = load_config(config_path)
 
             update_vitalsync_tokens(

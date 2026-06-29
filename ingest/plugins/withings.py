@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import csv
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
+import webbrowser
 from zoneinfo import ZoneInfo
 
 from ingest.activities import DEFAULT_TIMEZONE
 from ingest.app_data import write_csv_file, write_json_file
-from ingest.config import AppConfig, update_withings_tokens
+from ingest.config import AppConfig, update_withings_auth_state, update_withings_tokens
 
 TOKEN_URL = "https://wbsapi.withings.net/v2/oauth2"
 AUTHORIZE_URL = "https://account.withings.com/oauth2_user/authorize2"
@@ -20,6 +22,7 @@ SLEEP_URL = "https://wbsapi.withings.net/v2/sleep"
 TIMEOUT_SECONDS = 30
 BACKFILL_WINDOW_DAYS = 90
 WITHINGS_SCOPES = "user.metrics,user.activity"
+LOCAL_CALLBACK_TIMEOUT_SECONDS = 300
 
 BODY_MEASURE_TYPES = {
     1: ("weight", "kg"),
@@ -190,20 +193,22 @@ def get_access_token(session: Any, config: AppConfig) -> str:
     if config.withings.access_token:
         return config.withings.access_token
     raise SystemExit(
-        "Missing Withings credentials. Set plugin.withings.refresh_token in the config file, "
-        "or set plugin.withings.access_token for a one-off run. Client id/secret alone cannot access user data."
+        "Missing Withings auth state. Run `ingest auth withings auth-url`, then "
+        "`ingest auth withings exchange-code`."
     )
 
 
-def authorization_url(config: AppConfig, *, redirect_uri: str, state: str = "ingest") -> str:
-    _require(config.withings.client_id, "plugin.withings.client_id")
+def authorization_url(config: AppConfig, *, redirect_uri: str, state: str = "ingest", client_id: str = "") -> str:
+    resolved_client_id = client_id or config.withings.client_id
+    _require(resolved_client_id, "Withings client id")
+    update_withings_auth_state(config, client_id=resolved_client_id)
     return (
         AUTHORIZE_URL
         + "?"
         + urlencode(
             {
                 "response_type": "code",
-                "client_id": config.withings.client_id,
+                "client_id": resolved_client_id,
                 "redirect_uri": redirect_uri,
                 "scope": WITHINGS_SCOPES,
                 "state": state,
@@ -212,17 +217,31 @@ def authorization_url(config: AppConfig, *, redirect_uri: str, state: str = "ing
     )
 
 
-def exchange_authorization_code(config: AppConfig, *, code: str, redirect_uri: str) -> None:
+def exchange_authorization_code(
+    config: AppConfig,
+    *,
+    code: str,
+    redirect_uri: str,
+    client_id: str = "",
+    client_secret: str = "",
+) -> None:
     requests = _requests()
-    _require(config.withings.client_id, "plugin.withings.client_id")
-    _require(config.withings.client_secret, "plugin.withings.client_secret")
+    resolved_client_id = client_id or config.withings.client_id
+    resolved_client_secret = client_secret or config.withings.client_secret
+    _require(resolved_client_id, "Withings client id")
+    _require(resolved_client_secret, "Withings client secret")
+    update_withings_auth_state(
+        config,
+        client_id=resolved_client_id,
+        client_secret=resolved_client_secret,
+    )
     with requests.Session() as session:
         response = session.post(
             TOKEN_URL,
             data={
                 "action": "requesttoken",
-                "client_id": config.withings.client_id,
-                "client_secret": config.withings.client_secret,
+                "client_id": resolved_client_id,
+                "client_secret": resolved_client_secret,
                 "grant_type": "authorization_code",
                 "code": code,
                 "redirect_uri": redirect_uri,
@@ -233,10 +252,69 @@ def exchange_authorization_code(config: AppConfig, *, code: str, redirect_uri: s
     update_withings_tokens(config, body)
 
 
+def capture_local_oauth_code(auth_url: str, redirect_uri: str, *, timeout_seconds: int) -> str:
+    parsed_redirect = urlparse(redirect_uri)
+    if parsed_redirect.scheme != "http" or parsed_redirect.hostname not in {"127.0.0.1", "localhost"}:
+        raise SystemExit("Local Withings callback requires an http://127.0.0.1 or http://localhost redirect URI.")
+    if parsed_redirect.port is None:
+        raise SystemExit("Local Withings callback redirect URI must include a port.")
+
+    result: dict[str, str] = {}
+
+    class CallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            query = parse_qs(urlparse(self.path).query)
+            code = (query.get("code") or [""])[0]
+            error = (query.get("error") or [""])[0]
+            if code:
+                result["code"] = code
+                self._send_response("Withings authorization complete. You can close this tab.")
+                return
+            result["error"] = error or "missing authorization code"
+            self._send_response("Withings authorization failed. Return to the terminal.")
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+        def _send_response(self, message: str) -> None:
+            body = f"<html><body><p>{message}</p></body></html>".encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = HTTPServer((parsed_redirect.hostname, parsed_redirect.port), CallbackHandler)
+    server.timeout = max(1, timeout_seconds)
+    try:
+        webbrowser.open(auth_url)
+        server.handle_request()
+    finally:
+        server.server_close()
+
+    if "code" in result:
+        return result["code"]
+    if "error" in result:
+        raise SystemExit(f"Withings authorization failed: {result['error']}")
+    raise SystemExit("Timed out waiting for Withings OAuth callback.")
+
+
+def parse_authorization_code(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise SystemExit("Missing Withings authorization code.")
+    parsed = urlparse(stripped)
+    if parsed.query:
+        code = (parse_qs(parsed.query).get("code") or [""])[0]
+        if code:
+            return code
+    return stripped
+
+
 def refresh_access_token(session: Any, config: AppConfig) -> str:
-    _require(config.withings.client_id, "plugin.withings.client_id")
-    _require(config.withings.client_secret, "plugin.withings.client_secret")
-    _require(config.withings.refresh_token, "plugin.withings.refresh_token")
+    _require(config.withings.client_id, "Withings client id in auth state")
+    _require(config.withings.client_secret, "Withings client secret in auth state")
+    _require(config.withings.refresh_token, "Withings refresh token in auth state")
 
     try:
         response = session.post(
@@ -1187,7 +1265,7 @@ def _json_response(response: Any, error_message: str) -> Any:
 
 def _require(value: str, name: str) -> None:
     if not value:
-        raise SystemExit(f"Missing {name} in the config file.")
+        raise SystemExit(f"Missing {name}.")
 
 
 def _requests() -> Any:
