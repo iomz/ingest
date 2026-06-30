@@ -17,6 +17,29 @@ class SyncCallable(Protocol):
     def __call__(self, config: AppConfig) -> list[Path]: ...
 
 
+@dataclass(frozen=True)
+class PluginSyncScope:
+    requested: tuple[str, ...] = ()
+
+    def includes(self, capability: str) -> bool:
+        return any(
+            request == capability or capability.startswith(f"{request}.")
+            for request in self.requested
+        )
+
+    def intersects(self, capability: str) -> bool:
+        return any(
+            request == capability
+            or request.startswith(f"{capability}.")
+            or capability.startswith(f"{request}.")
+            for request in self.requested
+        )
+
+
+class ScopedSyncCallable(Protocol):
+    def __call__(self, config: AppConfig, scope: PluginSyncScope) -> list[Path]: ...
+
+
 class SyncUnavailableReasonCallable(Protocol):
     def __call__(self, config: AppConfig) -> str: ...
 
@@ -29,6 +52,7 @@ class PluginCliRegistry:
     get_config: Callable[[typer.Context], AppConfig]
     run_sync: Callable[[AppConfig, str], list[Path]]
     sync_ready: Callable[[AppConfig, str, bool], bool]
+    sync_scope: Callable[[AppConfig, str], PluginSyncScope]
     print_paths: Callable[[list[Path]], None]
     date_arg: Callable[[str], date]
     optional_date_arg: Callable[[str | None], date | None]
@@ -43,6 +67,7 @@ class PluginManifest:
     name: str
     provides: tuple[str, ...]
     sync: SyncCallable | None = None
+    sync_scoped: ScopedSyncCallable | None = None
     sync_unavailable_reason: SyncUnavailableReasonCallable | None = None
     register_cli: RegisterCliCallable | None = None
     serial_sync: bool = False
@@ -69,6 +94,7 @@ def load_plugin(name: str) -> PluginManifest:
     if not manifest.provides:
         raise PluginLoadError(f"Plugin {name!r} manifest must declare provides.")
     _validate_callable(name, "sync", manifest.sync, 1)
+    _validate_callable(name, "sync_scoped", manifest.sync_scoped, 2)
     _validate_callable(name, "sync_unavailable_reason", manifest.sync_unavailable_reason, 1)
     _validate_callable(name, "register_cli", manifest.register_cli, 1)
     return manifest

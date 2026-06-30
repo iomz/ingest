@@ -24,11 +24,15 @@ def patch_manifest_sync(plugin_module: object, **mock_kwargs: object):
     sync_mock = mock.Mock(**mock_kwargs)
     manifest = plugin_module.manifest
     original_sync = manifest.sync
+    original_sync_scoped = manifest.sync_scoped
     object.__setattr__(manifest, "sync", sync_mock)
+    if original_sync_scoped is not None:
+        object.__setattr__(manifest, "sync_scoped", lambda config, _scope: sync_mock(config))
     try:
         yield sync_mock
     finally:
         object.__setattr__(manifest, "sync", original_sync)
+        object.__setattr__(manifest, "sync_scoped", original_sync_scoped)
 
 
 def write_auth_state(data_dir: Path, plugin: str, state: dict[str, object]) -> None:

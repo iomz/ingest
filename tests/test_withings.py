@@ -13,6 +13,7 @@ from unittest import mock
 from ingest.config import load_config
 from ingest.plugins.withings import (
     authorization_url,
+    backfill,
     fetch_activity_windowed,
     fetch_body_measures_windowed,
     fetch_latest_height,
@@ -38,6 +39,7 @@ from ingest.plugins.withings import (
     write_sleep,
     write_workouts,
 )
+from ingest.sync_scope import build_plugin_sync_scope
 
 
 def write_auth_state(data_dir: Path, state: dict[str, object]) -> None:
@@ -809,6 +811,81 @@ data_dir = "{data_dir}"
 
         self.assertEqual(body, {"measuregrps": []})
         self.assertEqual(len(session.calls), 2)
+
+    def test_scoped_backfill_skips_sleep_when_vitalsync_selected_for_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = write_config(
+                root,
+                """
+[plugin.withings]
+
+[context.measurement]
+default = "withings"
+
+[context.recovery]
+default = "vitalsync"
+sleep = "vitalsync"
+""",
+            )
+            write_auth_state(data_dir, {"access_token": "access"})
+            config = load_config(config_path)
+            session = FakeSession()
+
+            with mock.patch("ingest.plugins.withings._requests", return_value=SessionProvider(session)):
+                written = backfill(
+                    config,
+                    start_date=date(2026, 6, 1),
+                    end_date=date(2026, 6, 1),
+                    scope=build_plugin_sync_scope(config, "withings"),
+                )
+
+            actions = [call.get("data", {}).get("action") for call in session.calls]
+            self.assertIn("getmeas", actions)
+            self.assertNotIn("getsummary", actions)
+            self.assertNotIn("get", actions)
+            self.assertEqual(
+                written,
+                [
+                    data_dir / "withings/raw/body_measures_backfill.json",
+                    data_dir / "withings/body_measures.csv",
+                ],
+            )
+
+    def test_scoped_backfill_fetches_sleep_when_withings_selected_for_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = write_config(
+                root,
+                """
+[plugin.withings]
+
+[context.measurement]
+default = "withings"
+
+[context.recovery]
+default = "withings"
+sleep = "withings"
+""",
+            )
+            write_auth_state(data_dir, {"access_token": "access"})
+            config = load_config(config_path)
+            session = FakeSession()
+
+            with mock.patch("ingest.plugins.withings._requests", return_value=SessionProvider(session)):
+                written = backfill(
+                    config,
+                    start_date=date(2026, 6, 1),
+                    end_date=date(2026, 6, 1),
+                    scope=build_plugin_sync_scope(config, "withings"),
+                )
+
+            actions = [call.get("data", {}).get("action") for call in session.calls]
+            self.assertIn("getmeas", actions)
+            self.assertIn("getsummary", actions)
+            self.assertIn(data_dir / "withings/raw/sleep_backfill.json", written)
 
     def test_fetches_latest_height_from_full_history(self) -> None:
         session = HeightSession()

@@ -15,7 +15,8 @@ from ingest.context import (
     generate_daily_context,
     render_daily_terminal_context,
 )
-from ingest.plugins import PluginCliRegistry, PluginManifest, load_plugin, load_repository_plugins
+from ingest.plugins import PluginCliRegistry, PluginManifest, PluginSyncScope, load_plugin, load_repository_plugins
+from ingest.sync_scope import build_plugin_sync_scope
 
 app = typer.Typer(help="Collect and render personal data for AI-assisted self-review.")
 sync_app = typer.Typer(help="Run daily incremental sync.")
@@ -124,9 +125,10 @@ def _sync_for_daily_context(config: AppConfig, enabled: bool) -> None:
 
 def _sync_plugin(config: AppConfig, plugin: str) -> list[Path]:
     manifest = load_plugin(plugin)
-    if manifest.sync is None:
+    if manifest.sync is None and manifest.sync_scoped is None:
         raise SystemExit(f"Plugin {plugin!r} does not support sync.")
-    return _run_explicit_sync(config, plugin, lambda: manifest.sync(config))
+    scope = build_plugin_sync_scope(config, plugin)
+    return _run_explicit_sync(config, plugin, lambda: _run_manifest_sync(manifest, config, scope))
 
 
 def _sync_all(config: AppConfig) -> list[Path]:
@@ -139,14 +141,19 @@ async def _sync_all_async(config: AppConfig) -> list[Path]:
     for manifest in load_repository_plugins():
         if not _plugin_sync_ready(config, manifest.name, explicit=False):
             continue
-        if manifest.sync is None:
+        if manifest.sync is None and manifest.sync_scoped is None:
             continue
         lock = config_update_lock if manifest.serial_sync else None
+        scope = build_plugin_sync_scope(config, manifest.name)
         plugins.append(
             (
                 manifest.name,
                 manifest,
-                lambda manifest=manifest, lock=lock: _run_sync_source(manifest.sync, config, lock),
+                lambda manifest=manifest, scope=scope, lock=lock: _run_sync_source(
+                    lambda sync_config: _run_manifest_sync(manifest, sync_config, scope),
+                    config,
+                    lock,
+                ),
             )
         )
 
@@ -174,6 +181,14 @@ def _run_explicit_sync(config: AppConfig, plugin: str, sync_func: Callable[[], l
     if not _plugin_sync_ready(config, plugin, explicit=True):
         return []
     return sync_func()
+
+
+def _run_manifest_sync(manifest: PluginManifest, config: AppConfig, scope: PluginSyncScope) -> list[Path]:
+    if manifest.sync_scoped is not None:
+        return manifest.sync_scoped(config, scope)
+    if manifest.sync is None:
+        raise SystemExit(f"Plugin {manifest.name!r} does not support sync.")
+    return manifest.sync(config)
 
 
 def _plugin_sync_ready(config: AppConfig, plugin: str, *, explicit: bool) -> bool:
@@ -238,6 +253,7 @@ def _register_plugin_cli() -> None:
         get_config=_config,
         run_sync=_sync_plugin,
         sync_ready=lambda config, plugin, explicit: _plugin_sync_ready(config, plugin, explicit=explicit),
+        sync_scope=build_plugin_sync_scope,
         print_paths=_print_paths,
         date_arg=_date_arg,
         optional_date_arg=_optional_date_arg,
