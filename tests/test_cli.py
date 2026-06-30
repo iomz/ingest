@@ -674,21 +674,24 @@ data_dir = "{data_dir}"
             hevy_sync.assert_not_called()
             self.assertIn("plugin.hevy is disabled; skipping.", stderr.getvalue())
 
-    def test_sync_missing_plugin_config_warns_and_skips(self) -> None:
+    def test_sync_hevy_runs_without_plugin_table(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "ingest.toml"
-            config_path.write_text("", encoding="utf-8")
-            stderr = io.StringIO()
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            output_path = data_dir / "hevy/workouts.csv"
+            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            stdout = io.StringIO()
 
             with (
-                patch_manifest_sync(hevy, return_value=[]) as hevy_sync,
-                contextlib.redirect_stderr(stderr),
+                patch_manifest_sync(hevy, return_value=[output_path]) as hevy_sync,
+                contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "hevy"])
 
             self.assertEqual(exit_code, 0)
-            hevy_sync.assert_not_called()
-            self.assertIn("plugin.hevy unavailable; skipping: missing [plugin.hevy] config table", stderr.getvalue())
+            hevy_sync.assert_called_once()
+            self.assertEqual(stdout.getvalue(), f"{output_path}\n")
 
     def test_sync_withings_runs_with_auth_state_without_plugin_table(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
