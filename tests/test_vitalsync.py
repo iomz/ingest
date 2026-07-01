@@ -60,6 +60,8 @@ class FakeSession:
             return self.get_responses.pop(0)
         if "sample_type=blood_pressure" in url:
             records = blood_pressure_records()
+        elif "sample_type=daily_step_count" in url:
+            records = daily_step_count_records()
         elif "sample_type=step_count" in url:
             records = step_count_records()
         else:
@@ -177,6 +179,72 @@ class VitalsyncTest(unittest.TestCase):
             ],
         )
 
+    def test_normalizes_daily_step_count_records_to_daily_totals(self) -> None:
+        rows = vitalsync.normalize_step_count_records(
+            daily_step_count_records()
+            + [
+                {
+                    **daily_step_count_records()[0],
+                    "source_id": "daily_step_count_duplicate_2026-06-25",
+                }
+            ],
+            local_timezone=ZoneInfo("Asia/Tokyo"),
+        )
+
+        self.assertEqual(rows[0]["date"], "2026-06-25")
+        self.assertEqual(rows[0]["step_count"], "9123")
+
+    def test_normalizes_daily_step_count_with_sample_fallback_by_date(self) -> None:
+        rows = vitalsync.normalize_step_count_records(
+            [
+                *step_count_records(),
+                {
+                    "sample_type": "step_count",
+                    "source_id": "steps-3",
+                    "start_time": "2026-06-25T15:00:00Z",
+                    "end_time": "2026-06-25T15:15:00Z",
+                    "value": {"quantity": 456},
+                },
+                *daily_step_count_records(),
+            ],
+            local_timezone=ZoneInfo("Asia/Tokyo"),
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "source": "vitalsync",
+                    "date": "2026-06-25",
+                    "step_count": "9123",
+                    "distance_km": "",
+                },
+                {
+                    "source": "vitalsync",
+                    "date": "2026-06-26",
+                    "step_count": "456",
+                    "distance_km": "",
+                },
+            ],
+        )
+
+    def test_normalizes_naive_step_count_timestamp_with_local_timezone(self) -> None:
+        rows = vitalsync.normalize_step_count_records(
+            [
+                {
+                    "sample_type": "step_count",
+                    "source_id": "steps-naive",
+                    "start_time": "2026-06-25T23:45:00",
+                    "end_time": "2026-06-26T00:15:00",
+                    "value": {"quantity": 123},
+                },
+            ],
+            local_timezone=ZoneInfo("Asia/Tokyo"),
+        )
+
+        self.assertEqual(rows[0]["date"], "2026-06-25")
+        self.assertEqual(rows[0]["step_count"], "123")
+
     def test_sync_fetches_records_and_writes_raw_and_sleep_csv(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -208,19 +276,21 @@ enabled = true
                     data_dir / "vitalsync/raw/blood_pressure_sync.json",
                     data_dir / "vitalsync/blood_pressure.csv",
                     data_dir / "vitalsync/raw/step_count_sync.json",
+                    data_dir / "vitalsync/raw/daily_step_count_sync.json",
                     data_dir / "vitalsync/steps.csv",
                 ],
             )
             self.assertIn("sample_type=sleep_analysis", session.get_urls[0])
             self.assertIn("sample_type=blood_pressure", session.get_urls[1])
             self.assertIn("sample_type=step_count", session.get_urls[2])
+            self.assertIn("sample_type=daily_step_count", session.get_urls[3])
             sleep_csv = (data_dir / "vitalsync/sleep.csv").read_text(encoding="utf-8")
             self.assertIn("vitalsync,", sleep_csv)
             self.assertIn("390.00,450.00,30.00", sleep_csv)
             blood_pressure_csv = (data_dir / "vitalsync/blood_pressure.csv").read_text(encoding="utf-8")
             self.assertIn("121,79", blood_pressure_csv)
             steps_csv = (data_dir / "vitalsync/steps.csv").read_text(encoding="utf-8")
-            self.assertIn("vitalsync,2026-06-25,579,", steps_csv)
+            self.assertIn("vitalsync,2026-06-25,9123,", steps_csv)
 
     def test_sync_writes_empty_csv_headers_when_records_are_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -242,6 +312,7 @@ enabled = true
             config = load_config(config_path)
             session = FakeSession(
                 get_responses=[
+                    FakeResponse({"schema": "vitalsync.records.v1", "records": []}),
                     FakeResponse({"schema": "vitalsync.records.v1", "records": []}),
                     FakeResponse({"schema": "vitalsync.records.v1", "records": []}),
                     FakeResponse({"schema": "vitalsync.records.v1", "records": []}),
@@ -305,19 +376,21 @@ enabled = true
                     FakeResponse({"schema": "vitalsync.records.v1", "records": sleep_records()}),
                     FakeResponse({"schema": "vitalsync.records.v1", "records": blood_pressure_records()}),
                     FakeResponse({"schema": "vitalsync.records.v1", "records": step_count_records()}),
+                    FakeResponse({"schema": "vitalsync.records.v1", "records": daily_step_count_records()}),
                 ],
             )
 
             with mock.patch("ingest.plugins.vitalsync._requests", return_value=FakeRequests(session)):
                 written = vitalsync.sync(config, end_date=date(2026, 6, 25))
 
-            self.assertEqual(len(written), 6)
+            self.assertEqual(len(written), 7)
             self.assertEqual(session.post_urls, ["https://api.sazanka.io/vitalsync/v1/tokens/refresh"])
             self.assertEqual(session.post_jsons, [{"refresh_token": "refresh", "client_id": "client"}])
             self.assertEqual(
                 session.get_headers,
                 [
                     {"Authorization": "Bearer revoked-access"},
+                    {"Authorization": "Bearer new-access"},
                     {"Authorization": "Bearer new-access"},
                     {"Authorization": "Bearer new-access"},
                     {"Authorization": "Bearer new-access"},
@@ -483,6 +556,22 @@ def step_count_records() -> list[dict[str, object]]:
             "start_time": "2026-06-25T03:00:00Z",
             "end_time": "2026-06-25T03:15:00Z",
             "value": {"quantity": 456},
+        },
+    ]
+
+
+def daily_step_count_records() -> list[dict[str, object]]:
+    return [
+        {
+            "sample_type": "daily_step_count",
+            "source_id": "daily_step_count_2026-06-25",
+            "source_bundle_id": None,
+            "source_name": "Apple Health Daily Steps",
+            "start_time": "2026-06-25T00:00:00+09:00",
+            "end_time": "2026-06-26T00:00:00+09:00",
+            "timezone": "Asia/Tokyo",
+            "value": {"quantity": 9123},
+            "metadata": {"aggregate": "day", "date": "2026-06-25"},
         },
     ]
 

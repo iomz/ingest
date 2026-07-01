@@ -24,11 +24,15 @@ def patch_manifest_sync(plugin_module: object, **mock_kwargs: object):
     sync_mock = mock.Mock(**mock_kwargs)
     manifest = plugin_module.manifest
     original_sync = manifest.sync
+    original_sync_scoped = manifest.sync_scoped
     object.__setattr__(manifest, "sync", sync_mock)
+    if original_sync_scoped is not None:
+        object.__setattr__(manifest, "sync_scoped", lambda config, _scope: sync_mock(config))
     try:
         yield sync_mock
     finally:
         object.__setattr__(manifest, "sync", original_sync)
+        object.__setattr__(manifest, "sync_scoped", original_sync_scoped)
 
 
 def write_auth_state(data_dir: Path, plugin: str, state: dict[str, object]) -> None:
@@ -42,6 +46,7 @@ class CliTest(unittest.TestCase):
         runner = CliRunner()
         help_paths = [
             ["today", "--help"],
+            ["date", "--help"],
             ["day", "--help"],
             ["yesterday", "--help"],
             ["sync", "hevy", "--help"],
@@ -269,7 +274,7 @@ class CliTest(unittest.TestCase):
             refresh_token.assert_called_once()
             self.assertEqual(stdout.getvalue(), f"{data_dir / 'vitalsync/auth.json'}\n")
 
-    def test_ingest_day_prints_terminal_content_without_sync_when_data_exists(self) -> None:
+    def test_ingest_date_prints_terminal_content_without_sync_when_data_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             data_dir = root / "app-data"
@@ -315,7 +320,7 @@ class CliTest(unittest.TestCase):
                     [
                         "--config",
                         str(config_path),
-                        "day",
+                        "date",
                         "2026-05-29",
                     ]
                 )
@@ -670,21 +675,24 @@ data_dir = "{data_dir}"
             hevy_sync.assert_not_called()
             self.assertIn("plugin.hevy is disabled; skipping.", stderr.getvalue())
 
-    def test_sync_missing_plugin_config_warns_and_skips(self) -> None:
+    def test_sync_hevy_runs_without_plugin_table(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "ingest.toml"
-            config_path.write_text("", encoding="utf-8")
-            stderr = io.StringIO()
+            root = Path(temp_dir)
+            data_dir = root / "app-data"
+            config_path = root / "ingest.toml"
+            output_path = data_dir / "hevy/workouts.csv"
+            config_path.write_text(f'[app]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
+            stdout = io.StringIO()
 
             with (
-                patch_manifest_sync(hevy, return_value=[]) as hevy_sync,
-                contextlib.redirect_stderr(stderr),
+                patch_manifest_sync(hevy, return_value=[output_path]) as hevy_sync,
+                contextlib.redirect_stdout(stdout),
             ):
                 exit_code = main(["--config", str(config_path), "sync", "hevy"])
 
             self.assertEqual(exit_code, 0)
-            hevy_sync.assert_not_called()
-            self.assertIn("plugin.hevy unavailable; skipping: missing [plugin.hevy] config table", stderr.getvalue())
+            hevy_sync.assert_called_once()
+            self.assertEqual(stdout.getvalue(), f"{output_path}\n")
 
     def test_sync_withings_runs_with_auth_state_without_plugin_table(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

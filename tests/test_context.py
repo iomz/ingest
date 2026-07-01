@@ -440,6 +440,7 @@ class ContextTest(unittest.TestCase):
         self.assertNotIn("Activity score", content)
         self.assert_no_custom_recovery(content)
         self.assertIn("| Movement | 20.50 km ride · steps unavailable |", content)
+        self.assertNotIn("| Strength |", content)
         self.assertNotIn("- Walking: 0.00 km / 0 min", content)
         self.assertIn("| Weight | 70.50 kg | 70.50 kg | 70.50 kg | Stable |", content)
         self.assertIn("## Machine Handoff", content)
@@ -789,6 +790,16 @@ class ContextTest(unittest.TestCase):
 
         self.assertIn("| Weight | 71.00 kg | 71.00 kg | 71.50 kg | Below 30-day average |", content)
         self.assertIn("| Body | 71.00 kg · decreasing |", content)
+
+    def test_snapshot_body_does_not_carry_forward_stale_weight(self) -> None:
+        historical_measures = [
+            weight_measure(date(2026, 6, 30), 97.00),
+        ]
+
+        content = render_daily_context(date(2026, 7, 1), [], [], historical_measures)
+
+        self.assertIn("| Body | No Withings weight available · unknown |", content)
+        self.assertIn("| Weight | No Withings weight available | 97.00 kg | 97.00 kg | Unknown |", content)
 
     def test_renders_positive_estimated_deficit_for_weight_loss(self) -> None:
         historical_measures = [
@@ -1465,6 +1476,7 @@ class ContextTest(unittest.TestCase):
 
         content = output.getvalue()
         self.assertIn("Sleep     6h42m / 23:46–06:28", content)
+        self.assertNotIn("Strength", content)
         self.assertIn("Recovery: Vitalsync", content)
         self.assertNotIn("Awake time   0h15m", content)
 

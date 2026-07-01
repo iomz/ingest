@@ -17,7 +17,7 @@ from ingest import prompts
 from ingest.activities import DEFAULT_TIMEZONE
 from ingest.app_data import write_csv_file, write_json_file
 from ingest.config import AppConfig, update_withings_auth_state, update_withings_tokens
-from ingest.plugins.contract import PluginCliRegistry, PluginManifest
+from ingest.plugins.contract import PluginCliRegistry, PluginManifest, PluginSyncScope
 
 TOKEN_URL = "https://wbsapi.withings.net/v2/oauth2"
 AUTHORIZE_URL = "https://account.withings.com/oauth2_user/authorize2"
@@ -102,6 +102,15 @@ WORKOUT_CATEGORIES = {
     8: "surf",
 }
 IGNORED_WORKOUT_CATEGORIES = {16}
+FULL_SYNC_SCOPE = PluginSyncScope(
+    (
+        "activity",
+        "measurement.body",
+        "measurement.blood_pressure",
+        "measurement.steps",
+        "recovery.sleep",
+    )
+)
 
 
 def sync(config: AppConfig, *, end_date: date | None = None) -> list[Path]:
@@ -110,6 +119,14 @@ def sync(config: AppConfig, *, end_date: date | None = None) -> list[Path]:
     if start_date > target_end_date:
         return []
     return sync_range(config, start_date, target_end_date, raw_name="body_measures_sync.json")
+
+
+def sync_scoped(config: AppConfig, scope: PluginSyncScope, *, end_date: date | None = None) -> list[Path]:
+    target_end_date = end_date or datetime.now(config.timezone).date()
+    start_date = _sync_cursor_date(config, target_end_date, scope)
+    if start_date > target_end_date:
+        return []
+    return sync_range(config, start_date, target_end_date, raw_name="body_measures_sync.json", scope=scope)
 
 
 def register_cli(registry: PluginCliRegistry) -> None:
@@ -140,6 +157,7 @@ def register_cli(registry: PluginCliRegistry) -> None:
                 config,
                 start_date=registry.date_arg(backfill_since),
                 end_date=registry.optional_date_arg(end_date),
+                scope=registry.sync_scope(config, "withings"),
             )
         )
 
@@ -297,90 +315,148 @@ manifest = PluginManifest(
         "recovery.sleep.sleep_score",
     ),
     sync=sync,
+    sync_scoped=sync_scoped,
     sync_unavailable_reason=sync_unavailable_reason,
     register_cli=register_cli,
     serial_sync=True,
 )
 
 
-def _sync_cursor_date(config: AppConfig, end_date: date) -> date:
-    latest_date = lagging_local_date(config)
+def _sync_cursor_date(config: AppConfig, end_date: date, scope: PluginSyncScope = FULL_SYNC_SCOPE) -> date:
+    latest_date = lagging_local_date(config, scope)
     if latest_date is None:
         return end_date - timedelta(days=config.withings.days - 1)
     return latest_date
 
 
-def backfill(config: AppConfig, *, start_date: date, end_date: date | None = None) -> list[Path]:
+def backfill(
+    config: AppConfig,
+    *,
+    start_date: date,
+    end_date: date | None = None,
+    scope: PluginSyncScope = FULL_SYNC_SCOPE,
+) -> list[Path]:
     target_end_date = end_date or datetime.now(config.timezone).date()
     if start_date > target_end_date:
         return []
-    return sync_range(config, start_date, target_end_date, raw_name="body_measures_backfill.json")
+    return sync_range(
+        config,
+        start_date,
+        target_end_date,
+        raw_name="body_measures_backfill.json",
+        scope=scope,
+    )
 
 
-def lagging_local_date(config: AppConfig) -> date | None:
-    latest_dates = [
-        latest_measure_date(read_measure_rows(config.withings.measures_csv)),
-        latest_activity_date(read_activity_rows(config.withings.activity_csv)),
-        latest_workout_date(read_workout_rows(config.withings.workouts_csv)),
-        latest_sleep_date(read_sleep_rows(config.withings.sleep_csv)),
-    ]
+def lagging_local_date(config: AppConfig, scope: PluginSyncScope = FULL_SYNC_SCOPE) -> date | None:
+    latest_dates = []
+    if _fetch_body(scope):
+        latest_dates.append(latest_measure_date(read_measure_rows(config.withings.measures_csv)))
+    if _fetch_activity(scope):
+        latest_dates.append(latest_activity_date(read_activity_rows(config.withings.activity_csv)))
+    if _fetch_workouts(scope):
+        latest_dates.append(latest_workout_date(read_workout_rows(config.withings.workouts_csv)))
+    if _fetch_sleep(scope):
+        latest_dates.append(latest_sleep_date(read_sleep_rows(config.withings.sleep_csv)))
     present_dates = [value for value in latest_dates if value is not None]
     if not present_dates:
         return None
     return min(present_dates)
 
 
-def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name: str) -> list[Path]:
+def sync_range(
+    config: AppConfig,
+    start_date: date,
+    end_date: date,
+    *,
+    raw_name: str,
+    scope: PluginSyncScope = FULL_SYNC_SCOPE,
+) -> list[Path]:
     if start_date > end_date:
+        return []
+    should_fetch_body = _fetch_body(scope)
+    should_fetch_activity = _fetch_activity(scope)
+    should_fetch_workouts = _fetch_workouts(scope)
+    should_fetch_sleep = _fetch_sleep(scope)
+    if not any((should_fetch_body, should_fetch_activity, should_fetch_workouts, should_fetch_sleep)):
         return []
     requests = _requests()
 
     with requests.Session() as session:
         access_token = get_access_token(session, config)
-        measures = fetch_body_measures_windowed(
-            session,
-            access_token,
-            start_date=start_date,
-            end_date=end_date,
-            local_timezone=config.timezone,
-        )
+        measures = {"measuregrps": []}
         height = {"measuregrps": []}
-        if not has_cached_height(config.withings.measures_csv):
+        activity = {"activities": []}
+        workouts = {"series": []}
+        sleep = {"series": []}
+        if should_fetch_body:
+            measures = fetch_body_measures_windowed(
+                session,
+                access_token,
+                start_date=start_date,
+                end_date=end_date,
+                local_timezone=config.timezone,
+            )
+        if should_fetch_body and not has_cached_height(config.withings.measures_csv):
             height = fetch_latest_height(
                 session,
                 access_token,
                 end_date=end_date,
                 local_timezone=config.timezone,
             )
-        activity = fetch_activity_windowed(
-            session,
-            access_token,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        workouts = fetch_workouts_windowed_if_available(
-            session,
-            access_token,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        sleep = fetch_sleep_summaries_windowed(
-            session,
-            access_token,
-            start_date=start_date,
-            end_date=end_date,
-            local_timezone=config.timezone,
-        )
+        if should_fetch_activity:
+            activity = fetch_activity_windowed(
+                session,
+                access_token,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        if should_fetch_workouts:
+            workouts = fetch_workouts_windowed_if_available(
+                session,
+                access_token,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        if should_fetch_sleep:
+            sleep = fetch_sleep_summaries_windowed(
+                session,
+                access_token,
+                start_date=start_date,
+                end_date=end_date,
+                local_timezone=config.timezone,
+            )
 
-    measures = _with_latest_height(measures, height)
-    written_paths = write_measures(config, measures, raw_name=raw_name, merge=True)
-    activity_raw_name = raw_name.replace("body_measures", "activity")
-    written_paths.extend(write_activity(config, activity, raw_name=activity_raw_name, merge=True))
-    workout_raw_name = raw_name.replace("body_measures", "workouts")
-    written_paths.extend(write_workouts(config, workouts, raw_name=workout_raw_name, merge=True))
-    sleep_raw_name = raw_name.replace("body_measures", "sleep")
-    written_paths.extend(write_sleep(config, sleep, raw_name=sleep_raw_name, merge=True))
+    written_paths: list[Path] = []
+    if should_fetch_body:
+        measures = _with_latest_height(measures, height)
+        written_paths.extend(write_measures(config, measures, raw_name=raw_name, merge=True))
+    if should_fetch_activity:
+        activity_raw_name = raw_name.replace("body_measures", "activity")
+        written_paths.extend(write_activity(config, activity, raw_name=activity_raw_name, merge=True))
+    if should_fetch_workouts:
+        workout_raw_name = raw_name.replace("body_measures", "workouts")
+        written_paths.extend(write_workouts(config, workouts, raw_name=workout_raw_name, merge=True))
+    if should_fetch_sleep:
+        sleep_raw_name = raw_name.replace("body_measures", "sleep")
+        written_paths.extend(write_sleep(config, sleep, raw_name=sleep_raw_name, merge=True))
     return written_paths
+
+
+def _fetch_body(scope: PluginSyncScope) -> bool:
+    return scope.intersects("measurement.body") or scope.intersects("measurement.blood_pressure")
+
+
+def _fetch_activity(scope: PluginSyncScope) -> bool:
+    return scope.intersects("measurement.steps") or scope.intersects("activity")
+
+
+def _fetch_workouts(scope: PluginSyncScope) -> bool:
+    return scope.intersects("activity")
+
+
+def _fetch_sleep(scope: PluginSyncScope) -> bool:
+    return scope.intersects("recovery.sleep")
 
 
 def get_access_token(session: Any, config: AppConfig) -> str:
