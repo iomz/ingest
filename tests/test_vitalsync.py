@@ -194,6 +194,57 @@ class VitalsyncTest(unittest.TestCase):
         self.assertEqual(rows[0]["date"], "2026-06-25")
         self.assertEqual(rows[0]["step_count"], "9123")
 
+    def test_normalizes_daily_step_count_with_sample_fallback_by_date(self) -> None:
+        rows = vitalsync.normalize_step_count_records(
+            [
+                *step_count_records(),
+                {
+                    "sample_type": "step_count",
+                    "source_id": "steps-3",
+                    "start_time": "2026-06-25T15:00:00Z",
+                    "end_time": "2026-06-25T15:15:00Z",
+                    "value": {"quantity": 456},
+                },
+                *daily_step_count_records(),
+            ],
+            local_timezone=ZoneInfo("Asia/Tokyo"),
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "source": "vitalsync",
+                    "date": "2026-06-25",
+                    "step_count": "9123",
+                    "distance_km": "",
+                },
+                {
+                    "source": "vitalsync",
+                    "date": "2026-06-26",
+                    "step_count": "456",
+                    "distance_km": "",
+                },
+            ],
+        )
+
+    def test_normalizes_naive_step_count_timestamp_with_local_timezone(self) -> None:
+        rows = vitalsync.normalize_step_count_records(
+            [
+                {
+                    "sample_type": "step_count",
+                    "source_id": "steps-naive",
+                    "start_time": "2026-06-25T23:45:00",
+                    "end_time": "2026-06-26T00:15:00",
+                    "value": {"quantity": 123},
+                },
+            ],
+            local_timezone=ZoneInfo("Asia/Tokyo"),
+        )
+
+        self.assertEqual(rows[0]["date"], "2026-06-25")
+        self.assertEqual(rows[0]["step_count"], "123")
+
     def test_sync_fetches_records_and_writes_raw_and_sleep_csv(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

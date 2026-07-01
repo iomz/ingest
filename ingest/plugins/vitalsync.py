@@ -216,7 +216,7 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
     )
     written_paths.append(daily_step_raw_path)
     step_rows = normalize_step_count_records(
-        daily_step_records or step_records,
+        step_records + daily_step_records,
         local_timezone=config.timezone,
     )
     existing_step_rows = read_step_rows(config.vitalsync.steps_csv)
@@ -532,7 +532,7 @@ def _step_record_date(record: dict[str, Any], local_timezone: ZoneInfo) -> str |
         metadata_date = str(metadata.get("date") or "").strip()
         if metadata_date:
             return metadata_date
-    start_time = _parse_timestamp(record.get("start_time"))
+    start_time = _parse_timestamp(record.get("start_time"), local_timezone)
     if start_time is None:
         return None
     return start_time.astimezone(local_timezone).date().isoformat()
@@ -647,7 +647,7 @@ def _sleep_category(record: dict[str, Any]) -> str:
     return str(value.get("category") or "").strip()
 
 
-def _parse_timestamp(value: Any) -> datetime | None:
+def _parse_timestamp(value: Any, local_timezone: ZoneInfo | None = None) -> datetime | None:
     raw = str(value or "").strip()
     if not raw:
         return None
@@ -656,7 +656,7 @@ def _parse_timestamp(value: Any) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
+        return parsed.replace(tzinfo=local_timezone or timezone.utc)
     return parsed
 
 
