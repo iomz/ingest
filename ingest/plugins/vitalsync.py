@@ -21,6 +21,7 @@ TIMEOUT_SECONDS = 30
 SLEEP_ANALYSIS = "sleep_analysis"
 BLOOD_PRESSURE = "blood_pressure"
 STEP_COUNT = "step_count"
+DAILY_STEP_COUNT = "daily_step_count"
 STEP_FIELDS = [
     "source",
     "date",
@@ -158,6 +159,15 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
             end_date=end_date,
             local_timezone=config.timezone,
         )
+        daily_step_records, access_token = fetch_records_with_refresh(
+            session,
+            config,
+            access_token,
+            sample_type=DAILY_STEP_COUNT,
+            start_date=start_date,
+            end_date=end_date,
+            local_timezone=config.timezone,
+        )
 
     written_paths: list[Path] = []
     raw_path = write_json_file(config.vitalsync.raw_dir / raw_name, {"records": sleep_records})
@@ -199,8 +209,14 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
         {"records": step_records},
     )
     written_paths.append(step_raw_path)
+    daily_step_raw_name = raw_name.replace("sleep_analysis", "daily_step_count")
+    daily_step_raw_path = write_json_file(
+        config.vitalsync.raw_dir / daily_step_raw_name,
+        {"records": daily_step_records},
+    )
+    written_paths.append(daily_step_raw_path)
     step_rows = normalize_step_count_records(
-        step_records,
+        daily_step_records or step_records,
         local_timezone=config.timezone,
     )
     existing_step_rows = read_step_rows(config.vitalsync.steps_csv)
@@ -480,12 +496,13 @@ def normalize_step_count_records(
     *,
     local_timezone: ZoneInfo,
 ) -> list[dict[str, Any]]:
-    steps_by_date: dict[str, int] = {}
+    sample_steps_by_date: dict[str, int] = {}
+    daily_steps_by_date: dict[str, int] = {}
     for record in records:
-        if record.get("sample_type") != STEP_COUNT:
+        if record.get("sample_type") not in {STEP_COUNT, DAILY_STEP_COUNT}:
             continue
-        start_time = _parse_timestamp(record.get("start_time"))
-        if start_time is None:
+        local_date = _step_record_date(record, local_timezone)
+        if local_date is None:
             continue
         value = record.get("value")
         if not isinstance(value, dict):
@@ -493,8 +510,11 @@ def normalize_step_count_records(
         quantity = _optional_int(value.get("quantity"))
         if quantity is None:
             continue
-        local_date = start_time.astimezone(local_timezone).date().isoformat()
-        steps_by_date[local_date] = steps_by_date.get(local_date, 0) + quantity
+        if record.get("sample_type") == DAILY_STEP_COUNT:
+            daily_steps_by_date[local_date] = quantity
+        else:
+            sample_steps_by_date[local_date] = sample_steps_by_date.get(local_date, 0) + quantity
+    steps_by_date = sample_steps_by_date | daily_steps_by_date
     return [
         {
             "source": "vitalsync",
@@ -504,6 +524,18 @@ def normalize_step_count_records(
         }
         for local_date, step_count in sorted(steps_by_date.items())
     ]
+
+
+def _step_record_date(record: dict[str, Any], local_timezone: ZoneInfo) -> str | None:
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict):
+        metadata_date = str(metadata.get("date") or "").strip()
+        if metadata_date:
+            return metadata_date
+    start_time = _parse_timestamp(record.get("start_time"))
+    if start_time is None:
+        return None
+    return start_time.astimezone(local_timezone).date().isoformat()
 
 
 def read_sleep_rows(path: Path) -> list[dict[str, str]]:

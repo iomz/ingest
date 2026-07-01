@@ -52,8 +52,9 @@ def today(
     raise typer.Exit(_print_daily_context(config, target) if markdown else _print_daily_terminal_context(config, target))
 
 
-@app.command()
-def day(
+@app.command("date")
+@app.command("day")
+def report_date(
     ctx: typer.Context,
     target_date: str = typer.Argument(..., help="Target date in YYYY-MM-DD format."),
     sync: bool = typer.Option(False, "--sync", help="Run `ingest sync all` before rendering context."),

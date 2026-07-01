@@ -46,6 +46,7 @@ class CliTest(unittest.TestCase):
         runner = CliRunner()
         help_paths = [
             ["today", "--help"],
+            ["date", "--help"],
             ["day", "--help"],
             ["yesterday", "--help"],
             ["sync", "hevy", "--help"],
@@ -273,7 +274,7 @@ class CliTest(unittest.TestCase):
             refresh_token.assert_called_once()
             self.assertEqual(stdout.getvalue(), f"{data_dir / 'vitalsync/auth.json'}\n")
 
-    def test_ingest_day_prints_terminal_content_without_sync_when_data_exists(self) -> None:
+    def test_ingest_date_prints_terminal_content_without_sync_when_data_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             data_dir = root / "app-data"
@@ -319,7 +320,7 @@ class CliTest(unittest.TestCase):
                     [
                         "--config",
                         str(config_path),
-                        "day",
+                        "date",
                         "2026-05-29",
                     ]
                 )
