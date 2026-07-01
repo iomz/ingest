@@ -83,8 +83,6 @@ def register_cli(registry: PluginCliRegistry) -> None:
 
 
 def sync_unavailable_reason(config: AppConfig) -> str:
-    if not config.hevy.configured:
-        return "missing [plugin.hevy] config table"
     return ""
 
 

@@ -332,14 +332,20 @@ def render_daily_terminal_context(
                 ),
             ),
             *_terminal_suunto_summary_rows(suunto_metrics, training_load_metrics),
-            (
-                "Strength",
-                _snapshot_strength_status(
-                    strength_activities,
-                    state.hevy_sets,
-                    volume_formatter=_format_terminal_volume,
-                    separator=" / ",
-                ),
+            *(
+                [
+                    (
+                        "Strength",
+                        _snapshot_strength_status(
+                            strength_activities,
+                            state.hevy_sets,
+                            volume_formatter=_format_terminal_volume,
+                            separator=" / ",
+                        ),
+                    )
+                ]
+                if strength_activities
+                else []
             ),
             *([("Sleep", _sleep_snapshot_status(sleep, separator=" / "))] if sleep else []),
             ("Body", _snapshot_body_status(weight_metrics, separator=" / ")),
@@ -1123,7 +1129,11 @@ def _render_daily_state(state: DailyState) -> str:
                 training_load_metrics,
             )
         ],
-        f"| Strength | {_snapshot_strength_status(strength_activities, state.hevy_sets)} |",
+        *(
+            [f"| Strength | {_snapshot_strength_status(strength_activities, state.hevy_sets)} |"]
+            if strength_activities
+            else []
+        ),
         *([f"| Sleep | {_sleep_snapshot_status(sleep)} |"] if sleep else []),
         f"| Body | {_snapshot_body_status(weight_metrics)} |",
         "",
@@ -2358,7 +2368,7 @@ def _weight_metrics(measures: list[dict[str, str]], target_date: date) -> dict[s
         and (measure_date := _measure_date(measure)) is not None
         and measure_date <= target_date
     ]
-    latest_weight = max(weights, key=lambda measure: measure.get("datetime_local", "")) if weights else None
+    latest_weight = _latest_weight_for_date(weights, target_date)
     current_weight = _format_weight(latest_weight) if latest_weight else "No Withings weight available"
 
     current_7d = _average_weight(weights, target_date, days=7)
