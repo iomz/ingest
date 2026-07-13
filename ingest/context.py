@@ -1372,10 +1372,10 @@ def _tsb_label(tsb: float) -> str:
     if tsb < -30:
         return "Too high intensity"
     if tsb < -10:
-        return "Fatigue / Improving fitness"
+        return "Fatigue (fitness improving)"
     if tsb < 15:
-        return "Training balance"
-    return "Losing fitness or recovering"
+        return "Balanced"
+    return "Recovery (fitness declining)"
 
 
 def _training_load_history_label(history_days: int) -> str:
