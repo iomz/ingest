@@ -103,10 +103,10 @@ class ContextTest(unittest.TestCase):
 
     def test_tsb_labels_use_suunto_style_zones(self) -> None:
         self.assertEqual(_tsb_label(-30.1), "Too high intensity")
-        self.assertEqual(_tsb_label(-30), "Fatigue / Improving fitness")
-        self.assertEqual(_tsb_label(-10), "Training balance")
-        self.assertEqual(_tsb_label(14.9), "Training balance")
-        self.assertEqual(_tsb_label(15), "Losing fitness or recovering")
+        self.assertEqual(_tsb_label(-30), "Fatigue (fitness improving)")
+        self.assertEqual(_tsb_label(-10), "Balanced")
+        self.assertEqual(_tsb_label(14.9), "Balanced")
+        self.assertEqual(_tsb_label(15), "Recovery (fitness declining)")
 
     def test_training_load_history_labels_use_calendar_span(self) -> None:
         self.assertEqual(
