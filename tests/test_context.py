@@ -527,6 +527,27 @@ class ContextTest(unittest.TestCase):
         self.assertIn("- Measurement: Withings", content)
         self.assertIn("  - Blood Pressure: Vitalsync", content)
 
+    def test_renders_latest_vitalsync_waist_circumference_with_date(self) -> None:
+        content = render_daily_context(
+            date(2026, 6, 25),
+            [],
+            waist_circumference_records=[
+                {
+                    "date": "2026-06-24",
+                    "datetime_local": "2026-06-24T07:30:00+09:00",
+                    "waist_circumference_m": "0.83",
+                },
+                {
+                    "date": "2026-06-25",
+                    "datetime_local": "2026-06-25T07:30:00+09:00",
+                    "waist_circumference_m": "0.82",
+                },
+            ],
+        )
+
+        self.assertIn("## Body", content)
+        self.assertIn("| Waist circumference | 82.0 cm (2026-06-25) |", content)
+
     def test_rounds_bmr_to_nearest_integer(self) -> None:
         content = render_daily_context(
             date(2026, 5, 29),

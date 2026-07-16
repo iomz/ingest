@@ -37,6 +37,7 @@ class DailyState:
     sleep_records: list[dict[str, str]] = field(default_factory=list)
     historical_sleep_records: list[dict[str, str]] = field(default_factory=list)
     blood_pressure_records: list[dict[str, str]] = field(default_factory=list)
+    waist_circumference_records: list[dict[str, str]] = field(default_factory=list)
     load_activities: list[NormalizedActivity] = field(default_factory=list)
     historical_load_activities: list[NormalizedActivity] = field(default_factory=list)
     step_source: str = ""
@@ -526,6 +527,7 @@ def render_daily_terminal_context(
         state.historical_measures,
         target_date,
         state.blood_pressure_records,
+        state.waist_circumference_records,
     )
     if body_rows:
         _render_section_title(console, "Body", theme)
@@ -636,6 +638,7 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
         blood_pressure_source,
         warnings,
     )
+    waist_circumference_records = read_vitalsync_waist_circumference(config.vitalsync.waist_circumference_csv)
     blood_pressure_records = blood_pressure_records_for_date(
         all_blood_pressure_records,
         target_date,
@@ -662,6 +665,7 @@ def build_daily_state(config: AppConfig, target_date: date) -> DailyState:
         sleep_records=sleep_records,
         historical_sleep_records=all_sleep_records,
         blood_pressure_records=blood_pressure_records,
+        waist_circumference_records=waist_circumference_records,
         step_source=step_source or "",
         measurement_source=measurement_source or "",
         blood_pressure_source=blood_pressure_source or "",
@@ -853,6 +857,13 @@ def read_vitalsync_blood_pressure(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(csv_file))
 
 
+def read_vitalsync_waist_circumference(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
 def read_withings_blood_pressure(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -991,6 +1002,7 @@ def render_daily_context(
     sleep_records: list[dict[str, str]] | None = None,
     historical_sleep_records: list[dict[str, str]] | None = None,
     blood_pressure_records: list[dict[str, str]] | None = None,
+    waist_circumference_records: list[dict[str, str]] | None = None,
     withings_activity_summaries: list[dict[str, str]] | None = None,
     historical_withings_activity_summaries: list[dict[str, str]] | None = None,
 ) -> str:
@@ -1009,6 +1021,7 @@ def render_daily_context(
     )
     sleep_records = sleep_records or []
     blood_pressure_records = blood_pressure_records or []
+    waist_circumference_records = waist_circumference_records or []
     historical_sleep_records = (
         historical_sleep_records
         if historical_sleep_records is not None
@@ -1036,6 +1049,7 @@ def render_daily_context(
         sleep_records=sleep_records,
         historical_sleep_records=historical_sleep_records,
         blood_pressure_records=blood_pressure_records,
+        waist_circumference_records=waist_circumference_records,
         step_source="withings" if step_records else "",
         measurement_source="withings" if measures else "",
         blood_pressure_source="vitalsync" if blood_pressure_records else "",
@@ -1106,6 +1120,7 @@ def _render_daily_state(state: DailyState) -> str:
         state.historical_measures,
         target_date,
         state.blood_pressure_records,
+        state.waist_circumference_records,
     )
     suunto_metrics = _suunto_daily_metrics(state.load_activities)
     training_load_metrics = _training_load_metrics(state.historical_load_activities, target_date)
@@ -1919,6 +1934,7 @@ def _body_rows(
     historical_measures: list[dict[str, str]],
     target_date: date,
     blood_pressure_records: list[dict[str, str]] | None = None,
+    waist_circumference_records: list[dict[str, str]] | None = None,
 ) -> list[str]:
     return [
         f"| {label} | {value} |"
@@ -1927,6 +1943,7 @@ def _body_rows(
             historical_measures,
             target_date,
             blood_pressure_records or [],
+            waist_circumference_records or [],
         )
     ]
 
@@ -1936,6 +1953,7 @@ def _terminal_body_kv_rows(
     historical_measures: list[dict[str, str]],
     target_date: date,
     blood_pressure_records: list[dict[str, str]] | None = None,
+    waist_circumference_records: list[dict[str, str]] | None = None,
 ) -> list[tuple[str, str]]:
     return [
         (label, value.replace(" · ", " / "))
@@ -1944,6 +1962,7 @@ def _terminal_body_kv_rows(
             historical_measures,
             target_date,
             blood_pressure_records or [],
+            waist_circumference_records or [],
         )
     ]
 
@@ -1953,10 +1972,17 @@ def _body_kv_rows(
     historical_measures: list[dict[str, str]],
     target_date: date,
     blood_pressure_records: list[dict[str, str]],
+    waist_circumference_records: list[dict[str, str]],
 ) -> list[tuple[str, str]]:
     blood_pressure = _latest_blood_pressure(blood_pressure_records)
+    waist_circumference = _latest_waist_circumference(waist_circumference_records, target_date)
     if not measures:
-        return [("Blood pressure", _blood_pressure_value(blood_pressure))] if blood_pressure else []
+        rows: list[tuple[str, str]] = []
+        if waist_circumference:
+            rows.append(("Waist circumference", _waist_circumference_value(waist_circumference)))
+        if blood_pressure:
+            rows.append(("Blood pressure", _blood_pressure_value(blood_pressure)))
+        return rows
 
     latest_by_type = _latest_measures_by_type(measures)
     main_types = {
@@ -2008,7 +2034,25 @@ def _body_kv_rows(
         rows.append(("Index", " / ".join(index_parts)))
     if blood_pressure:
         rows.append(("Blood pressure", _blood_pressure_value(blood_pressure)))
+    if waist_circumference:
+        rows.append(("Waist circumference", _waist_circumference_value(waist_circumference)))
     return rows
+
+
+def _latest_waist_circumference(
+    records: list[dict[str, str]], target_date: date
+) -> dict[str, str] | None:
+    eligible_records = [record for record in records if record.get("date", "") <= target_date.isoformat()]
+    if not eligible_records:
+        return None
+    return max(eligible_records, key=lambda record: record.get("datetime_local", ""))
+
+
+def _waist_circumference_value(record: dict[str, str]) -> str:
+    metres = _float_value(record.get("waist_circumference_m", ""))
+    if metres is None:
+        return "Unknown"
+    return f"{metres * 100:.1f} cm ({record.get('date', 'Unknown')})"
 
 
 def _latest_blood_pressure(records: list[dict[str, str]]) -> dict[str, str] | None:

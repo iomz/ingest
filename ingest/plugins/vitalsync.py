@@ -22,6 +22,8 @@ SLEEP_ANALYSIS = "sleep_analysis"
 BLOOD_PRESSURE = "blood_pressure"
 STEP_COUNT = "step_count"
 DAILY_STEP_COUNT = "daily_step_count"
+WAIST_CIRCUMFERENCE = "waist_circumference"
+WAIST_CIRCUMFERENCE_HISTORY_START = date(2000, 1, 1)
 STEP_FIELDS = [
     "source",
     "date",
@@ -35,6 +37,15 @@ BP_FIELDS = [
     "datetime_local",
     "systolic_mmHg",
     "diastolic_mmHg",
+    "source_name",
+    "source_bundle_id",
+]
+WAIST_CIRCUMFERENCE_FIELDS = [
+    "source",
+    "source_id",
+    "date",
+    "datetime_local",
+    "waist_circumference_m",
     "source_name",
     "source_bundle_id",
 ]
@@ -118,6 +129,7 @@ manifest = PluginManifest(
         "measurement.steps",
         "measurement.blood_pressure.systolic_mmHg",
         "measurement.blood_pressure.diastolic_mmHg",
+        "measurement.body.waist_circumference_m",
     ),
     sync=sync,
     sync_unavailable_reason=sync_unavailable_reason,
@@ -165,6 +177,15 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
             access_token,
             sample_type=DAILY_STEP_COUNT,
             start_date=start_date,
+            end_date=end_date,
+            local_timezone=config.timezone,
+        )
+        waist_circumference_records, _access_token = fetch_records_with_refresh(
+            session,
+            config,
+            access_token,
+            sample_type=WAIST_CIRCUMFERENCE,
+            start_date=WAIST_CIRCUMFERENCE_HISTORY_START,
             end_date=end_date,
             local_timezone=config.timezone,
         )
@@ -226,6 +247,25 @@ def sync_range(config: AppConfig, start_date: date, end_date: date, *, raw_name:
         STEP_FIELDS,
     )
     written_paths.append(step_path)
+    waist_circumference_raw_name = raw_name.replace("sleep_analysis", "waist_circumference")
+    waist_circumference_raw_path = write_json_file(
+        config.vitalsync.raw_dir / waist_circumference_raw_name,
+        {"records": waist_circumference_records},
+    )
+    written_paths.append(waist_circumference_raw_path)
+    waist_circumference_rows = normalize_waist_circumference_records(
+        waist_circumference_records,
+        local_timezone=config.timezone,
+    )
+    waist_circumference_path = write_csv_file(
+        config.vitalsync.waist_circumference_csv,
+        merge_waist_circumference_rows(
+            read_waist_circumference_rows(config.vitalsync.waist_circumference_csv),
+            waist_circumference_rows,
+        ),
+        WAIST_CIRCUMFERENCE_FIELDS,
+    )
+    written_paths.append(waist_circumference_path)
     return written_paths
 
 
@@ -526,6 +566,35 @@ def normalize_step_count_records(
     ]
 
 
+def normalize_waist_circumference_records(
+    records: list[dict[str, Any]],
+    *,
+    local_timezone: ZoneInfo,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if record.get("sample_type") != WAIST_CIRCUMFERENCE:
+            continue
+        start_time = _parse_timestamp(record.get("start_time"))
+        value = record.get("value")
+        quantity = _optional_float(value.get("quantity")) if isinstance(value, dict) else None
+        if start_time is None or quantity is None or quantity <= 0:
+            continue
+        local_time = start_time.astimezone(local_timezone)
+        rows.append(
+            {
+                "source": "vitalsync",
+                "source_id": str(record.get("source_id") or ""),
+                "date": local_time.date().isoformat(),
+                "datetime_local": local_time.isoformat(),
+                "waist_circumference_m": f"{quantity:.6g}",
+                "source_name": str(record.get("source_name") or ""),
+                "source_bundle_id": str(record.get("source_bundle_id") or ""),
+            }
+        )
+    return sorted(rows, key=lambda row: (str(row["datetime_local"]), str(row["source_id"])))
+
+
 def _step_record_date(record: dict[str, Any], local_timezone: ZoneInfo) -> str | None:
     metadata = record.get("metadata")
     if isinstance(metadata, dict):
@@ -559,6 +628,13 @@ def read_step_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(csv_file))
 
 
+def read_waist_circumference_rows(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
 def merge_blood_pressure_rows(
     existing_rows: list[dict[str, Any]],
     new_rows: list[dict[str, Any]],
@@ -584,6 +660,16 @@ def merge_step_rows(
     for row in [*existing_rows, *new_rows]:
         rows_by_key[(str(row.get("source", "")), str(row.get("date", "")))] = row
     return sorted(rows_by_key.values(), key=lambda row: (str(row.get("date", "")), str(row.get("source", ""))))
+
+
+def merge_waist_circumference_rows(
+    existing_rows: list[dict[str, Any]],
+    new_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in [*existing_rows, *new_rows]:
+        rows_by_key[(str(row.get("source", "")), str(row.get("source_id", "")))] = row
+    return sorted(rows_by_key.values(), key=lambda row: (str(row.get("datetime_local", "")), str(row.get("source_id", ""))))
 
 
 def _sync_start_date(config: AppConfig, end_date: date) -> date:
@@ -624,6 +710,13 @@ def latest_step_date(rows: Iterable[dict[str, str]]) -> date | None:
         except ValueError:
             pass
     return max(dates) if dates else None
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _interval_minutes(intervals: list[tuple[datetime, datetime]]) -> float:
