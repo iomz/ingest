@@ -65,6 +65,7 @@ source_bundle_id = "com.lexwarelabs.goodmorning"
 sleep_csv = "vitalsync/sleep.csv"
 steps_csv = "vitalsync/steps.csv"
 blood_pressure_csv = "vitalsync/blood_pressure.csv"
+waist_circumference_csv = "vitalsync/waist_circumference.csv"
 raw_dir = "vitalsync/raw"
 # Number of days to fetch when no local Vitalsync sleep data exists.
 sync_days = 30

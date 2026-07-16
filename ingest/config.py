@@ -71,6 +71,7 @@ class VitalsyncConfig:
     sleep_csv: Path
     steps_csv: Path
     blood_pressure_csv: Path
+    waist_circumference_csv: Path
     raw_dir: Path
     days: int
 
@@ -382,6 +383,12 @@ def _load_vitalsync_config(data: dict[str, Any], data_dir: Path) -> VitalsyncCon
             vitalsync,
             "plugin.vitalsync.blood_pressure_csv",
             Path("vitalsync/blood_pressure.csv"),
+        ),
+        waist_circumference_csv=_configured_data_path(
+            data_dir,
+            vitalsync,
+            "plugin.vitalsync.waist_circumference_csv",
+            Path("vitalsync/waist_circumference.csv"),
         ),
         raw_dir=_configured_data_path(data_dir, vitalsync, "plugin.vitalsync.raw_dir", Path("vitalsync/raw")),
         days=_positive_int(vitalsync.get("sync_days", 30), "plugin.vitalsync.sync_days"),

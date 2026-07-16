@@ -55,7 +55,7 @@ Plugins fetch and normalize source-specific data. Physical Context source preced
 | --- | --- | --- | --- |
 | `hevy` | Hevy Export | strength workouts, strength sets | CSV export or browser export |
 | `suunto` | Suunto App via suuntool | workouts, workout load | `suuntool` CLI |
-| `vitalsync` | Vitalsync HealthKit Bridge | steps, sleep, blood pressure | Vitalsync receiver API |
+| `vitalsync` | Vitalsync HealthKit Bridge | steps, sleep, blood pressure, waist circumference | Vitalsync receiver API |
 | `withings` | Withings Health Cloud | body composition, blood pressure; legacy steps, sleep, workouts | Withings API |
 
 A lower-level context setting overrides a higher-level `default`.
@@ -161,7 +161,7 @@ Vitalsync sync fetches Apple Health records from the configured `plugin.vitalsyn
 ingest auth vitalsync register-client --pairing-token "<PAIRING_TOKEN>" --client-label "ingest"
 ```
 
-This saves `client_id`, `refresh_token`, `access_token`, and `expires_at` to `${XDG_DATA_HOME:-~/.local/share}/ingest/vitalsync/auth.json`, not the config file. `ingest sync vitalsync` refreshes the access token automatically when needed. Supported record types are `sleep_analysis`, `blood_pressure`, and `step_count`; sleep is filtered to Sleep Cycle (`com.lexwarelabs.goodmorning`) unless `plugin.vitalsync.source_bundle_id` is set to an empty string. Sync writes sleep, blood-pressure, and step CSV headers even when no matching records are returned, so context generation can distinguish "no rows yet" from "plugin has not synced."
+This saves `client_id`, `refresh_token`, `access_token`, and `expires_at` to `${XDG_DATA_HOME:-~/.local/share}/ingest/vitalsync/auth.json`, not the config file. `ingest sync vitalsync` refreshes the access token automatically when needed. Supported record types are `sleep_analysis`, `blood_pressure`, `step_count`, and `waist_circumference`; waist circumference is fetched from full available history so infrequent measurements remain visible. Sleep is filtered to Sleep Cycle (`com.lexwarelabs.goodmorning`) unless `plugin.vitalsync.source_bundle_id` is set to an empty string. Sync writes sleep, blood-pressure, step, and waist-circumference CSV headers even when no matching records are returned, so context generation can distinguish "no rows yet" from "plugin has not synced."
 
 Withings OAuth helpers:
 
